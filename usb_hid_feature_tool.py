@@ -772,21 +772,11 @@ class USBHIDApp(QMainWindow):
             return
 
         try:
-            raw_text = self.hex_input.text().strip().replace(" ", "")
-            report_id = 0x00
-
-            if raw_text:
-                try:
-                    parsed = bytes.fromhex(raw_text)
-                    if len(parsed) > 0:
-                        report_id = parsed[0]
-                except ValueError:
-                    pass
+            # 透過 _prepare_payload 進行 HEX 格式合法性與長度檢查
+            payload = self._prepare_payload()
+            report_id = payload[0]
 
             target_len = self.dev_caps_f_len
-            if target_len <= 0:
-                raise ValueError("當前裝置不支援 Feature Report (長度為 0 Bytes)！")
-
             response = self.dev.get_feature_report(report_id, target_len)
 
             if response:
@@ -802,7 +792,7 @@ class USBHIDApp(QMainWindow):
             if "read" in str(e).lower() or "device" in str(e).lower():
                 self.handle_unexpected_disconnect()
             else:
-                QMessageBox.warning(self, "錯誤", str(e))
+                QMessageBox.warning(self, "長度限制與格式錯誤", str(e))
 
     def closeEvent(self, event):
         if self.monitor_thread:
