@@ -31,16 +31,14 @@ from PyQt6.QtGui import QIcon
 def get_resource_path(relative_path):
     """取得資源檔案的絕對路徑，兼容開發環境與 PyInstaller 打包環境"""
     if hasattr(sys, "_MEIPASS"):
-        # PyInstaller 打包後的臨時解壓目錄
         base_path = Path(sys._MEIPASS)
     else:
-        # 一般 Python 執行時的腳本目錄
         base_path = Path(__file__).resolve().parent
     return base_path / relative_path
 
 
 # ---------------------------------------------------------------------------
-# Windows API 定義：用來讀取 HID Caps 取得 Input / Output / Feature 長度
+# Windows API 定義：讀取 HID Caps 取得 Input / Output / Feature 長度
 # ---------------------------------------------------------------------------
 class HIDP_CAPS(ctypes.Structure):
     _fields_ = [
@@ -98,13 +96,8 @@ def get_hid_report_lengths(device_path):
     i_len, o_len, f_len = 0, 0, 0
 
     try:
-        if ctypes.windll.hid.HidD_GetPreparsedData(
-            handle, ctypes.byref(preparsed_data)
-        ):
-            if (
-                ctypes.windll.hid.HidP_GetCaps(preparsed_data, ctypes.byref(caps))
-                == 0x00110000
-            ):
+        if ctypes.windll.hid.HidD_GetPreparsedData(handle, ctypes.byref(preparsed_data)):
+            if ctypes.windll.hid.HidP_GetCaps(preparsed_data, ctypes.byref(caps)) == 0x00110000:
                 i_len = caps.InputReportByteLength
                 o_len = caps.OutputReportByteLength
                 f_len = caps.FeatureReportByteLength
@@ -131,20 +124,17 @@ class USBGlobalMonitorThread(QThread):
         self.last_device_paths = set()
 
     def set_target_path(self, path):
-        """設定當前已連線的目標裝置路徑"""
         self.target_path = path
 
     def clear_target_path(self):
-        """清除連線目標"""
         self.target_path = None
 
     def run(self):
-        # 初始化裝置清單
         initial_devs = hid.enumerate()
         self.last_device_paths = {d.get("path") for d in initial_devs}
 
         while self.running:
-            time.sleep(0.5)  # 每 0.5 秒輪詢一次
+            time.sleep(0.5)
             if not self.running:
                 break
 
@@ -177,14 +167,15 @@ class USBHIDApp(QMainWindow):
         self.monitor_thread = None
         self.device_info_list = []
         self.cmd_list = []  # [(cmd_name, hex_str), ...]
-        self.stop_requested = False  # 控制 Auto Run 中止標記
+        self.stop_requested = False  # 控制 Run All 中止標記
+        self.dev_caps_f_len = 0  # 動態紀錄當前裝置的 Feature 預設長度
 
         self.initUI()
-        self.start_global_monitor()  # 啟動全時背景監控 Thread
+        self.start_global_monitor()
 
     def initUI(self):
         self.setWindowTitle("USB HID Feature Report 工具")
-        self.resize(760, 580)
+        self.resize(800, 600)
 
         main_layout = QVBoxLayout()
 
@@ -209,39 +200,45 @@ class USBHIDApp(QMainWindow):
         self.load_cmd_btn.clicked.connect(self.load_cmd_file)
 
         self.cmd_combo = QComboBox()
-        self.cmd_combo.addItem("-- 請選擇或載入指令 (Custom Input) --")
+        self.cmd_combo.addItem("-- 請先載入命令清單 --")
         self.cmd_combo.currentIndexChanged.connect(self.on_cmd_selected)
+        self.cmd_combo.setEnabled(False)  # 防呆：未載入命令前禁止選擇
 
         delay_label = QLabel("Delay (ms):")
         self.delay_input = QLineEdit("100")
-        self.delay_input.setFixedWidth(50)
+        self.delay_input.setFixedWidth(42)
 
-        self.auto_run_btn = QPushButton("Auto Run All")
-        self.auto_run_btn.clicked.connect(self.auto_run_all)
-        self.auto_run_btn.setEnabled(False)
+        self.run_one_btn = QPushButton("Run One")
+        self.run_one_btn.clicked.connect(self.run_one)
+        self.run_one_btn.setFixedWidth(66)
+        self.run_one_btn.setEnabled(False)
+
+        self.run_all_btn = QPushButton("Run All")
+        self.run_all_btn.clicked.connect(self.run_all)
+        self.run_all_btn.setFixedWidth(66)
+        self.run_all_btn.setEnabled(False)
 
         self.stop_run_btn = QPushButton("Stop")
-        self.stop_run_btn.clicked.connect(self.stop_auto_run)
+        self.stop_run_btn.clicked.connect(self.stop_run_all)
+        self.stop_run_btn.setFixedWidth(66)
         self.stop_run_btn.setEnabled(False)
 
         cmd_layout.addWidget(self.load_cmd_btn)
         cmd_layout.addWidget(self.cmd_combo, stretch=1)
         cmd_layout.addWidget(delay_label)
         cmd_layout.addWidget(self.delay_input)
-        cmd_layout.addWidget(self.auto_run_btn)
+        cmd_layout.addWidget(self.run_one_btn)
+        cmd_layout.addWidget(self.run_all_btn)
         cmd_layout.addWidget(self.stop_run_btn)
         main_layout.addLayout(cmd_layout)
 
         # 3. HEX 資料輸入區域
         data_layout = QVBoxLayout()
-        data_layout.addWidget(
-            QLabel("HEX 資料輸入 (首位為 Report ID，總長 64 Bytes，未滿自動補 00):")
-        )
+        self.input_label = QLabel("HEX 資料輸入 (未滿長度自動補 0x00，超過則阻擋)")
+        data_layout.addWidget(self.input_label)
 
         self.hex_input = QLineEdit()
-        self.hex_input.setPlaceholderText(
-            "例如: 00 01 02 03 (第一個 00 即為 Report ID)"
-        )
+        self.hex_input.setPlaceholderText("例如: 00 01 02 03 (第一個 00 即為 Report ID)")
         data_layout.addWidget(self.hex_input)
         main_layout.addLayout(data_layout)
 
@@ -289,29 +286,21 @@ class USBHIDApp(QMainWindow):
     # 全時背景監控管理
     # ---------------------------------------------------------------------------
     def start_global_monitor(self):
-        """啟動常駐的背景 USB 插拔監控"""
         self.monitor_thread = USBGlobalMonitorThread()
         self.monitor_thread.usb_changed.connect(self.on_usb_changed)
-        self.monitor_thread.target_disconnected.connect(
-            self.handle_unexpected_disconnect
-        )
+        self.monitor_thread.target_disconnected.connect(self.handle_unexpected_disconnect)
         self.monitor_thread.start()
 
     def on_usb_changed(self):
-        """當背景監控到有任何 USB 裝置插拔時觸發"""
         if self.dev is None:
             self.log("[系統] 偵測到 USB 裝置變更，自動更新選單...")
             self.refresh_devices()
 
-    # ---------------------------------------------------------------------------
-    # 處理裝置意外拔除 (連線中狀態)
-    # ---------------------------------------------------------------------------
     def handle_unexpected_disconnect(self):
-        """當背景監控偵測到連線中的裝置被拔除時觸發"""
         if self.dev is None:
             return
 
-        self.stop_requested = True  # 若正在 Auto Run 亦一併中斷
+        self.stop_requested = True  # 若正在 Run All 亦一併中斷
         if self.monitor_thread:
             self.monitor_thread.clear_target_path()
 
@@ -323,6 +312,7 @@ class USBHIDApp(QMainWindow):
 
         self.dev = None
         self.connected_path = None
+        self.dev_caps_f_len = 0
 
         # 重置 UI 按鈕狀態
         self.connect_btn.setText("Connect")
@@ -331,7 +321,8 @@ class USBHIDApp(QMainWindow):
         self.set_feature_btn.setEnabled(False)
         self.get_feature_btn.setEnabled(False)
         self.stop_run_btn.setEnabled(False)
-        self.update_auto_run_state()
+        self.input_label.setText("HEX 資料輸入 (未滿長度自動補 0x00，超過則阻擋)")
+        self.update_run_btn_state()
 
         self.log("[系統] 警告: 當前連線的 USB 裝置已被拔除，已自動中斷連線！")
 
@@ -349,9 +340,7 @@ class USBHIDApp(QMainWindow):
         self.refresh_devices()
 
     def log(self, message):
-        """列印訊息到介面的 Log 視窗，並自動加上 Timestamp"""
         timestamp = datetime.now().strftime("[%H:%M:%S.%f]")[:-3] + "]"
-
         if "\n" in message:
             lines = message.split("\n")
             formatted_message = f"{timestamp} {lines[0]}"
@@ -362,17 +351,28 @@ class USBHIDApp(QMainWindow):
             self.log_text.append(f"{timestamp} {message}")
 
     def clear_log(self):
-        """清除 Log 視窗"""
         self.log_text.clear()
 
     def save_log(self):
-        """導出 Log 紀錄為檔案"""
         log_content = self.log_text.toPlainText()
         if not log_content.strip():
             QMessageBox.information(self, "提示", "目前沒有任何 Log 紀錄可供儲存！")
             return
 
-        default_filename = f"hid_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+        # 預設前綴為 Disconnected
+        vid_pid_prefix = "Disconnected"
+
+        # 若目前有連線且下拉選單有有效項目，直接從 self.device_info_list 取出 VID/PID
+        if self.dev and self.device_info_list:
+            idx = self.device_combo.currentIndex()
+            if 0 <= idx < len(self.device_info_list):
+                dev_info = self.device_info_list[idx]
+                vid = dev_info.get("vendor_id", 0)
+                pid = dev_info.get("product_id", 0)
+                vid_pid_prefix = f"{vid:04X}_{pid:04X}"
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        default_filename = f"{vid_pid_prefix}_log_{timestamp}.txt"
         file_path, _ = QFileDialog.getSaveFileName(
             self,
             "儲存 Log 紀錄",
@@ -390,24 +390,24 @@ class USBHIDApp(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "錯誤", f"儲存檔案失敗:\n{e}")
 
-    def update_auto_run_state(self):
-        """根據連線狀態與 CMD 列表是否有內容，控制 Auto Run 按鈕開關"""
+    def update_run_btn_state(self):
+        """根據連線狀態、裝置CAPS長度與 CMD 列表，控制 Run One 與 Run All 按鈕開關"""
         is_connected = self.dev is not None
+        has_valid_lens = self.dev_caps_f_len > 0
         has_commands = len(self.cmd_list) > 0
-        self.auto_run_btn.setEnabled(is_connected and has_commands)
 
-    # 載入 TXT 指令檔案
+        self.run_one_btn.setEnabled(is_connected and has_valid_lens)
+        self.run_all_btn.setEnabled(is_connected and has_valid_lens and has_commands)
+
     def load_cmd_file(self):
-        file_path, _ = QFileDialog.getOpenFileName(
-            self, "開啟指令清單檔案", "", "Text Files (*.txt);;All Files (*)"
-        )
+        file_path, _ = QFileDialog.getOpenFileName(self, "開啟命令清單檔案", "", "Text Files (*.txt);;All Files (*)")
         if not file_path:
             return
 
         try:
             self.cmd_list.clear()
             self.cmd_combo.clear()
-            self.cmd_combo.addItem("-- 請選擇指令 --")
+            self.cmd_combo.addItem("-- 請選擇命令 --")
 
             count = 0
             with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
@@ -427,43 +427,92 @@ class USBHIDApp(QMainWindow):
                         self.cmd_combo.addItem(display_name)
                         count += 1
 
-            self.log(f"[指令載入] 成功載入 {count} 個指令檔內容。")
-            if count == 0:
-                QMessageBox.warning(
-                    self, "警告", "檔案內未解析到符合 [Name],[HEX] 格式的指令！"
-                )
+            self.log(f"[命令載入] 成功載入 {count} 個命令。")
 
-            self.update_auto_run_state()
+            # 防呆邏輯：當成功解析到至少一條命令時才啟用 ComboBox，否則保持禁用
+            if count > 0:
+                self.cmd_combo.setEnabled(True)
+            else:
+                self.cmd_combo.setEnabled(False)
+                QMessageBox.warning(self, "警告", "檔案內未解析到符合 [Name],[HEX] 格式的命令！")
+
+            self.update_run_btn_state()
 
         except Exception as e:
-            self.log(f"[錯誤] 載入指令檔失敗: {str(e)}")
+            self.cmd_combo.setEnabled(False)  # 讀檔發生例外時維持禁用
+            self.log(f"[錯誤] 載入命令清單檔案失敗: {str(e)}")
             QMessageBox.critical(self, "錯誤", f"讀取檔案失敗:\n{e}")
 
-    # 下拉選單切換事件
     def on_cmd_selected(self, index):
         cmd_index = index - 1
         if 0 <= cmd_index < len(self.cmd_list):
             _, hex_str = self.cmd_list[cmd_index]
             self.hex_input.setText(hex_str)
 
-    # 按下 Stop 按鈕觸發
-    def stop_auto_run(self):
+    def stop_run_all(self):
         if not self.stop_requested:
             self.stop_requested = True
             self.stop_run_btn.setEnabled(False)
-            self.log(
-                "[Auto Run] 收到使用者中斷請求，等待當前指令 (Set/Get Feature) 完成後將自動停止..."
-            )
+            self.log("[Run All] 收到使用者中斷請求，等待當前命令完成後將自動停止...")
 
-    # 安全的 Delay 處理
     def _safe_delay(self, delay_sec):
         start_time = time.time()
         while (time.time() - start_time) < delay_sec:
             QCoreApplication.processEvents()
             time.sleep(0.005)
 
-    # 自動發送 CMD List 裡的所有指令
-    def auto_run_all(self):
+    def run_one(self):
+        if not self.dev:
+            return
+
+        try:
+            self._prepare_payload()
+        except ValueError as e:
+            QMessageBox.warning(self, "長度驗證失敗", str(e))
+            return
+
+        try:
+            delay_ms = float(self.delay_input.text().strip())
+            if delay_ms < 0:
+                raise ValueError
+            delay_sec = delay_ms / 1000.0
+        except ValueError:
+            QMessageBox.warning(self, "輸入錯誤", "請輸入有效的延遲時間 (正數數字毫秒)！")
+            return
+
+        self.run_one_btn.setEnabled(False)
+        self.run_all_btn.setEnabled(False)
+        self.set_feature_btn.setEnabled(False)
+        self.get_feature_btn.setEnabled(False)
+
+        try:
+            self.log("==========================================")
+            self.log(f"[Run One] 開始執行單組命令 (delay={delay_ms:.0f}ms)...")
+            self.log("==========================================")
+
+            self.set_feature()
+            QCoreApplication.processEvents()
+
+            if delay_sec > 0:
+                self._safe_delay(delay_sec)
+
+            self.get_feature()
+            QCoreApplication.processEvents()
+
+            if delay_sec > 0:
+                self._safe_delay(delay_sec)
+
+            self.log("==========================================")
+            self.log("[Run One] 單組命令測試完成！")
+            self.log("==========================================")
+
+        finally:
+            is_valid = self.dev_caps_f_len > 0
+            self.set_feature_btn.setEnabled(is_valid)
+            self.get_feature_btn.setEnabled(is_valid)
+            self.update_run_btn_state()
+
+    def run_all(self):
         if not self.dev or not self.cmd_list:
             return
 
@@ -473,19 +522,16 @@ class USBHIDApp(QMainWindow):
                 raise ValueError
             delay_sec = delay_ms / 1000.0
         except ValueError:
-            QMessageBox.warning(
-                self, "輸入錯誤", "請輸入有效的延遲時間 (正數數字毫秒)！"
-            )
+            QMessageBox.warning(self, "輸入錯誤", "請輸入有效的延遲時間 (正數數字毫秒)！")
             return
 
         self.stop_requested = False
         self.log("==========================================")
-        self.log(
-            f"[Auto Run] 開始執行批次測試，共 {len(self.cmd_list)} 項指令 (間隔 delay={delay_ms:.0f}ms)..."
-        )
+        self.log(f"[Run All] 開始執行批次測試，共 {len(self.cmd_list)} 項命令 (間隔 delay={delay_ms:.0f}ms)...")
         self.log("==========================================")
 
-        self.auto_run_btn.setEnabled(False)
+        self.run_one_btn.setEnabled(False)
+        self.run_all_btn.setEnabled(False)
         self.stop_run_btn.setEnabled(True)
         self.set_feature_btn.setEnabled(False)
         self.get_feature_btn.setEnabled(False)
@@ -493,54 +539,50 @@ class USBHIDApp(QMainWindow):
         total = len(self.cmd_list)
         executed_count = 0
 
-        for idx, (name, hex_str) in enumerate(self.cmd_list, 1):
-            if not self.dev:
-                break
+        try:
+            for idx, (name, hex_str) in enumerate(self.cmd_list, 1):
+                if not self.dev:
+                    break
 
-            self.log(f">>> [{idx}/{total}] 執行指令: {name} (delay={delay_ms:.0f}ms)")
+                self.log(f">>> [{idx}/{total}] 執行命令: {name} (delay={delay_ms:.0f}ms)")
 
-            self.cmd_combo.setCurrentIndex(idx)
-            self.hex_input.setText(hex_str)
-            QCoreApplication.processEvents()
+                self.cmd_combo.setCurrentIndex(idx)
+                self.hex_input.setText(hex_str)
+                QCoreApplication.processEvents()
 
-            # 1. 發送 Set Feature
-            self.set_feature()
-            QCoreApplication.processEvents()
+                self.set_feature()
+                QCoreApplication.processEvents()
 
-            if delay_sec > 0:
-                self._safe_delay(delay_sec)
+                if delay_sec > 0:
+                    self._safe_delay(delay_sec)
 
-            # 2. 接收 Get Feature
-            self.get_feature()
-            QCoreApplication.processEvents()
+                self.get_feature()
+                QCoreApplication.processEvents()
 
-            executed_count += 1
+                executed_count += 1
 
-            if delay_sec > 0:
-                self._safe_delay(delay_sec)
+                if delay_sec > 0:
+                    self._safe_delay(delay_sec)
 
-            # 檢查是否被按下 Stop 或連線已斷開
-            if self.stop_requested or not self.dev:
-                self.log("------------------------------------------")
-                self.log(f"[Auto Run] 已依照請求完成第 {idx} 項指令後安全停止！")
-                break
+                if self.stop_requested or not self.dev:
+                    self.log("==========================================")
+                    self.log(f"[Run All] 已依照請求完成第 {idx} 項命令後安全停止！")
+                    break
+        finally:
+            self.stop_requested = False
+            self.stop_run_btn.setEnabled(False)
+            is_valid = self.dev_caps_f_len > 0
+            self.set_feature_btn.setEnabled(is_valid)
+            self.get_feature_btn.setEnabled(is_valid)
+            self.update_run_btn_state()
 
         self.log("==========================================")
         if self.stop_requested:
-            self.log(
-                f"[Auto Run] 批次指令已手動中斷！(共完成 {executed_count}/{total} 項指令)"
-            )
+            self.log(f"[Run All] 批次命令已手動中斷！(共完成 {executed_count}/{total} 項命令)")
         else:
-            self.log(f"[Auto Run] 批次指令測試完成！(共執行 {total} 項指令)")
+            self.log(f"[Run All] 批次命令測試完成！(共執行 {total} 項命令)")
         self.log("==========================================")
 
-        self.stop_requested = False
-        self.stop_run_btn.setEnabled(False)
-        self.set_feature_btn.setEnabled(True)
-        self.get_feature_btn.setEnabled(True)
-        self.update_auto_run_state()
-
-    # 按下「Refresh」按鈕偵測所有 USB 裝置並進行 Mask 過濾與排序
     def refresh_devices(self):
         self.device_combo.clear()
         raw_list = hid.enumerate()
@@ -550,9 +592,7 @@ class USBHIDApp(QMainWindow):
             self.log("[系統] 未偵測到任何 USB HID 裝置。")
             return
 
-        # -------------------------------------------------------------------
-        # 1. Mask 過濾：跳過 Product 與 Manufacturer 皆為空的無名裝置
-        # -------------------------------------------------------------------
+        # 1. Mask 過濾 Unknown 裝置
         self.device_info_list = []
         for dev in raw_list:
             prod = dev.get("product_string")
@@ -569,9 +609,7 @@ class USBHIDApp(QMainWindow):
             self.log("[系統] 掃描完成，但所有裝置皆為 Unknown 並已自動過濾。")
             return
 
-        # -------------------------------------------------------------------
-        # 2. 排序邏輯：優先依 VID 排序 -> 再依 PID 排序 -> 最後依 Product String 排序
-        # -------------------------------------------------------------------
+        # 2. 依 VID -> PID -> Product String 排序
         self.device_info_list.sort(
             key=lambda d: (
                 d.get("vendor_id", 0),
@@ -580,9 +618,7 @@ class USBHIDApp(QMainWindow):
             )
         )
 
-        # -------------------------------------------------------------------
         # 3. 填入 ComboBox 介面
-        # -------------------------------------------------------------------
         for dev in self.device_info_list:
             vid = f"{dev['vendor_id']:04X}"
             pid = f"{dev['product_id']:04X}"
@@ -596,9 +632,7 @@ class USBHIDApp(QMainWindow):
                 path_str = str(path)
 
             i_len, o_len, f_len = get_hid_report_lengths(path_str)
-            display_str = (
-                f"[{vid}, {pid}] (I: {i_len}, O: {o_len}, F: {f_len}) | {prod} ({mfg})"
-            )
+            display_str = f"[{vid}, {pid}] (I: {i_len}, O: {o_len}, F: {f_len}) | {prod} ({mfg})"
             self.device_combo.addItem(display_str)
 
         masked_count = len(raw_list) - len(self.device_info_list)
@@ -606,7 +640,6 @@ class USBHIDApp(QMainWindow):
             f"[系統] 掃描完成：共 {len(self.device_info_list)} 個有效 HID 裝置 (已排序，已自動遮罩 {masked_count} 個 Unknown 裝置)。"
         )
 
-    # 按下「Connect」按鈕進行連接 / 斷開
     def toggle_connect(self):
         if self.dev is None:
             idx = self.device_combo.currentIndex()
@@ -616,18 +649,38 @@ class USBHIDApp(QMainWindow):
 
             target_dev = self.device_info_list[idx]
             try:
+                path = target_dev["path"]
+                path_str = path.decode("utf-8", errors="ignore") if isinstance(path, bytes) else str(path)
+
+                _, _, f_len = get_hid_report_lengths(path_str)
+                if f_len <= 0:
+                    self.log(
+                        f"[錯誤] 拒絕連線：該裝置宣告之長度不符合 Feature Report 傳輸條件 (Feature: {f_len})，必須不為 0！"
+                    )
+                    QMessageBox.warning(
+                        self,
+                        "拒絕連線",
+                        f"該裝置宣告之長度不符合 Feature Report 傳輸條件 (Feature: {f_len})，必須不為 0！",
+                    )
+                    return
+
+                self.dev_caps_f_len = f_len
+
                 self.dev = hid.device()
-                self.dev.open_path(target_dev["path"])
+                self.dev.open_path(path)
                 self.dev.set_nonblocking(True)
-                self.connected_path = target_dev["path"]
+                self.connected_path = path
 
                 # 通知監控 Thread 當前連線的裝置路徑
                 if self.monitor_thread:
                     self.monitor_thread.set_target_path(self.connected_path)
 
-                self.log(
-                    f"[連線] 成功連接至: VID_{target_dev['vendor_id']:04X}&PID_{target_dev['product_id']:04X}"
-                )
+                self.log(f"[連線] 成功連接至: VID={target_dev['vendor_id']:04X}&PID={target_dev['product_id']:04X}")
+                self.log(f"[連線] 裝置預設封包長度 -> Feature (F): {f_len}")
+
+                # 更新介面動態提示長度資訊
+                self.input_label.setText(f"HEX 資料輸入 Feature Report 預設封包長度: {f_len} Bytes")
+
                 self.connect_btn.setText("Disconnect")
                 self.device_combo.setEnabled(False)
                 self.refresh_btn.setEnabled(False)
@@ -639,6 +692,7 @@ class USBHIDApp(QMainWindow):
                 QMessageBox.critical(self, "錯誤", f"無法連接至該裝置:\n{e}")
                 self.dev = None
                 self.connected_path = None
+                self.dev_caps_f_len = 0
         else:
             if self.monitor_thread:
                 self.monitor_thread.clear_target_path()
@@ -649,32 +703,45 @@ class USBHIDApp(QMainWindow):
                 pass
             self.dev = None
             self.connected_path = None
+            self.dev_caps_f_len = 0
             self.log("[連線] 已中斷裝置連接。")
             self.connect_btn.setText("Connect")
             self.device_combo.setEnabled(True)
             self.refresh_btn.setEnabled(True)
             self.set_feature_btn.setEnabled(False)
             self.get_feature_btn.setEnabled(False)
+            self.input_label.setText("HEX 資料輸入 (未滿長度自動補 0x00，超過則阻擋)")
 
-        self.update_auto_run_state()
+        self.update_run_btn_state()
 
+    # ---------------------------------------------------------------------------
+    # 解析並驗證傳送的封包 (長度超過直接阻擋，未滿則自動補 0x00)
+    # ---------------------------------------------------------------------------
     def _prepare_payload(self):
+        if self.dev_caps_f_len <= 0:
+            raise ValueError("當前裝置不支援 Feature Report (長度為 0 Bytes)！")
+
         raw_text = self.hex_input.text().strip().replace(" ", "")
 
         if not raw_text:
-            raise ValueError("請輸入 HEX 字串！")
+            raise ValueError("HEX 輸入欄位為空，請填入有效資料！")
 
         try:
-            parsed_bytes = bytes.fromhex(raw_text)
+            parsed_bytes = bytearray(bytes.fromhex(raw_text))
         except ValueError:
-            raise ValueError("請輸入有效的 HEX 字串（例如：00 01 02 或 000102）！")
+            raise ValueError("請輸入有效的 HEX 字串（例如：00 01 02 ...）！")
 
-        if len(parsed_bytes) > 64:
+        target_len = self.dev_caps_f_len
+
+        # 若超過裝置預設長度：嚴格阻擋並丟出例外，拒絕發送無效/不完整封包
+        if len(parsed_bytes) > target_len:
             raise ValueError(
-                f"輸入資料超過 64 Bytes（目前：{len(parsed_bytes)} Bytes）！"
+                f"輸入資料長度 ({len(parsed_bytes)} Bytes) 已超過裝置預設長度 ({target_len} Bytes)！\n"
+                f"為維護 Protocol 完整性，拒絕自動裁切並停止發送。"
             )
 
-        padded_bytes = parsed_bytes.ljust(64, b"\x00")
+        # 若未滿預設長度：自動向後補 0x00 填滿至裝置預設長度
+        padded_bytes = bytes(parsed_bytes).ljust(target_len, b"\x00")
         return padded_bytes
 
     def set_feature(self):
@@ -698,7 +765,7 @@ class USBHIDApp(QMainWindow):
             if "write" in str(e).lower() or "device" in str(e).lower():
                 self.handle_unexpected_disconnect()
             else:
-                QMessageBox.warning(self, "錯誤", str(e))
+                QMessageBox.warning(self, "長度限制與格式錯誤", str(e))
 
     def get_feature(self):
         if not self.dev:
@@ -716,7 +783,11 @@ class USBHIDApp(QMainWindow):
                 except ValueError:
                     pass
 
-            response = self.dev.get_feature_report(report_id, 64)
+            target_len = self.dev_caps_f_len
+            if target_len <= 0:
+                raise ValueError("當前裝置不支援 Feature Report (長度為 0 Bytes)！")
+
+            response = self.dev.get_feature_report(report_id, target_len)
 
             if response:
                 recv_bytes = bytes(response)
@@ -724,9 +795,7 @@ class USBHIDApp(QMainWindow):
                     f"[RX] Get Feature 接收成功 (Report ID: 0x{report_id:02X}, 長度: {len(recv_bytes)} Bytes):\n  <- {recv_bytes.hex(' ')}"
                 )
             else:
-                self.log(
-                    f"[警告] 未收到來自裝置的 Get Feature 回應 (Report ID: 0x{report_id:02X})。"
-                )
+                self.log(f"[警告] 未收到來自裝置的 Get Feature 回應 (Report ID: 0x{report_id:02X})。")
 
         except Exception as e:
             self.log(f"[錯誤] Get Feature 操作失敗: {str(e)}")
@@ -753,15 +822,14 @@ class USBHIDApp(QMainWindow):
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
     try:
-        myappid = "myfirmware.usbhidtool.gui.1.0"
+        myappid = "neilxia.usbhidfeaturetool.gui.1.0"
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)
     except Exception:
         pass
 
     app = QApplication(sys.argv)
 
-    # 透過動態解析函數取得 .ico 絕對路徑
-    icon_path = get_resource_path("usb_hid_feature_tool.ico")
+    icon_path = get_resource_path("usb_hid_tool.ico")
 
     window = USBHIDApp()
 
