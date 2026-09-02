@@ -218,8 +218,8 @@ class USBHIDFrame(wx.Frame):
         self.cmd_combo.Bind(wx.EVT_COMBOBOX, self.on_cmd_selected)
         self.cmd_combo.Enable(False)
 
-        delay_label = wx.StaticText(parent, label="Delay (ms):")
-        self.delay_input = wx.TextCtrl(parent, value="100", size=(50, -1))
+        action_delay_label = wx.StaticText(parent, label="Delay (ms):")
+        self.action_delay_input = wx.TextCtrl(parent, value="100", size=(50, -1))
 
         self.run_one_btn = wx.Button(parent, label="Run One", size=(70, -1))
         self.run_one_btn.Bind(wx.EVT_BUTTON, self.on_btn_run_one)
@@ -235,8 +235,8 @@ class USBHIDFrame(wx.Frame):
 
         sizer.Add(self.load_cmd_btn, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 5)
         sizer.Add(self.cmd_combo, 1, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 5)
-        sizer.Add(delay_label, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 5)
-        sizer.Add(self.delay_input, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 5)
+        sizer.Add(action_delay_label, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 5)
+        sizer.Add(self.action_delay_input, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 5)
         sizer.Add(self.run_one_btn, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 5)
         sizer.Add(self.run_all_btn, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 5)
         sizer.Add(self.stop_run_btn, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 5)
@@ -366,7 +366,7 @@ class USBHIDFrame(wx.Frame):
         self.get_feature_btn.Enable(False)
         self.stop_run_btn.Enable(False)
         self.input_label.SetLabel("HEX 資料輸入 (未滿長度自動補 0x00，超過則阻擋)")
-        self.update_run_btn_state()
+        self.update_ui_state()
 
         self.log("[系統] 警告: 當前連線的 USB 裝置已被拔除，已自動中斷連線！")
 
@@ -396,10 +396,7 @@ class USBHIDFrame(wx.Frame):
             wx.MessageBox("目前沒有任何 Log 紀錄可供儲存！", "提示", wx.OK | wx.ICON_INFORMATION, self)
             return
 
-        # 預設前綴為 Disconnected
         vid_pid_prefix = "Disconnected"
-
-        # 若目前有連線且下拉選單有有效項目，直接從 self.device_info_list 取出 VID/PID
         if self.dev and self.device_info_list:
             idx = self.device_combo.GetSelection()
             if 0 <= idx < len(self.device_info_list):
@@ -430,7 +427,7 @@ class USBHIDFrame(wx.Frame):
         except Exception as e:
             wx.MessageBox(f"儲存檔案失敗:\n{e}", "錯誤", wx.OK | wx.ICON_ERROR, self)
 
-    def update_run_btn_state(self):
+    def update_ui_state(self):
         """根據連線狀態、裝置CAPS長度與 CMD 列表，控制 Run One 與 Run All 按鈕開關"""
         is_connected = self.dev is not None
         has_valid_lens = self.dev_caps_f_len > 0
@@ -483,7 +480,7 @@ class USBHIDFrame(wx.Frame):
                 self.cmd_combo.Enable(False)
                 wx.MessageBox("檔案內未解析到符合 [Name],[HEX] 格式的命令！", "警告", wx.OK | wx.ICON_WARNING, self)
 
-            self.update_run_btn_state()
+            self.update_ui_state()
 
         except Exception as e:
             self.cmd_combo.Enable(False)  # 讀檔發生例外時維持禁用
@@ -520,7 +517,7 @@ class USBHIDFrame(wx.Frame):
             return
 
         try:
-            delay_ms = float(self.delay_input.GetValue().strip())
+            delay_ms = float(self.action_delay_input.GetValue().strip())
             if delay_ms < 0:
                 raise ValueError
             delay_sec = delay_ms / 1000.0
@@ -558,14 +555,14 @@ class USBHIDFrame(wx.Frame):
             is_valid = self.dev_caps_f_len > 0
             self.set_feature_btn.Enable(is_valid)
             self.get_feature_btn.Enable(is_valid)
-            self.update_run_btn_state()
+            self.update_ui_state()
 
     def run_all(self):
         if not self.dev or not self.cmd_list:
             return
 
         try:
-            delay_ms = float(self.delay_input.GetValue().strip())
+            delay_ms = float(self.action_delay_input.GetValue().strip())
             if delay_ms < 0:
                 raise ValueError
             delay_sec = delay_ms / 1000.0
@@ -622,7 +619,7 @@ class USBHIDFrame(wx.Frame):
             is_valid = self.dev_caps_f_len > 0
             self.set_feature_btn.Enable(is_valid)
             self.get_feature_btn.Enable(is_valid)
-            self.update_run_btn_state()
+            self.update_ui_state()
 
         self.log("==========================================")
         if self.stop_requested:
@@ -767,7 +764,7 @@ class USBHIDFrame(wx.Frame):
             self.get_feature_btn.Enable(False)
             self.input_label.SetLabel("HEX 資料輸入 (未滿長度自動補 0x00，超過則阻擋)")
 
-        self.update_run_btn_state()
+        self.update_ui_state()
 
     # ---------------------------------------------------------------------------
     # 解析並驗證傳送的封包 (長度超過直接阻擋，未滿則自動補 0x00)
@@ -866,7 +863,7 @@ class USBHIDFrame(wx.Frame):
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
     try:
-        myappid = "neilxia.usbhidfeaturetool.gui.1.0"
+        myappid = "neilxia.usbhidfeaturetool.wx.1.0"
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)
     except Exception:
         pass
