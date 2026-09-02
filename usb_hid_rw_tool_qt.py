@@ -257,9 +257,9 @@ class USBHIDApp(QMainWindow):
         self.cmd_combo.currentIndexChanged.connect(self.on_cmd_selected)
         self.cmd_combo.setEnabled(False)  # 防呆：未載入命令前禁止選擇
 
-        delay_label = QLabel("Delay (ms):")
-        self.delay_input = QLineEdit("100")
-        self.delay_input.setFixedWidth(42)
+        action_delay_label = QLabel("Delay (ms):")
+        self.action_delay_input = QLineEdit("100")
+        self.action_delay_input.setFixedWidth(42)
 
         self.run_one_btn = QPushButton("Run One")
         self.run_one_btn.clicked.connect(self.run_one)
@@ -278,8 +278,8 @@ class USBHIDApp(QMainWindow):
 
         cmd_layout.addWidget(self.load_cmd_btn)
         cmd_layout.addWidget(self.cmd_combo, stretch=1)
-        cmd_layout.addWidget(delay_label)
-        cmd_layout.addWidget(self.delay_input)
+        cmd_layout.addWidget(action_delay_label)
+        cmd_layout.addWidget(self.action_delay_input)
         cmd_layout.addWidget(self.run_one_btn)
         cmd_layout.addWidget(self.run_all_btn)
         cmd_layout.addWidget(self.stop_run_btn)
@@ -402,7 +402,7 @@ class USBHIDApp(QMainWindow):
         self.get_report_btn.setEnabled(False)
         self.stop_run_btn.setEnabled(False)
         self.input_label.setText("HEX 資料輸入 (未滿長度自動補 0x00，超過則阻擋)")
-        self.update_run_btn_state()
+        self.update_ui_state()
 
         self.log("[系統] 警告: 當前連線的 USB 裝置已被拔除，已自動中斷連線！")
 
@@ -439,10 +439,7 @@ class USBHIDApp(QMainWindow):
             QMessageBox.information(self, "提示", "目前沒有任何 Log 紀錄可供儲存！")
             return
 
-        # 預設前綴為 Disconnected
         vid_pid_prefix = "Disconnected"
-
-        # 若目前有連線且下拉選單有有效項目，直接從 self.device_info_list 取出 VID/PID
         if self.dev and self.device_info_list:
             idx = self.device_combo.currentIndex()
             if 0 <= idx < len(self.device_info_list):
@@ -470,7 +467,7 @@ class USBHIDApp(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "錯誤", f"儲存檔案失敗:\n{e}")
 
-    def update_run_btn_state(self):
+    def update_ui_state(self):
         """根據連線狀態、裝置CAPS長度與 CMD 列表，控制 Run One 與 Run All 按鈕開關"""
         is_connected = self.dev is not None
         has_valid_lens = self.dev_caps_i_len > 0 and self.dev_caps_o_len > 0
@@ -516,7 +513,7 @@ class USBHIDApp(QMainWindow):
                 self.cmd_combo.setEnabled(False)
                 QMessageBox.warning(self, "警告", "檔案內未解析到符合 [Name],[HEX] 格式的命令！")
 
-            self.update_run_btn_state()
+            self.update_ui_state()
 
         except Exception as e:
             self.cmd_combo.setEnabled(False)  # 讀檔發生例外時維持禁用
@@ -553,7 +550,7 @@ class USBHIDApp(QMainWindow):
             return
 
         try:
-            delay_ms = float(self.delay_input.text().strip())
+            delay_ms = float(self.action_delay_input.text().strip())
             if delay_ms < 0:
                 raise ValueError
             delay_sec = delay_ms / 1000.0
@@ -590,14 +587,14 @@ class USBHIDApp(QMainWindow):
         finally:
             self.set_report_btn.setEnabled(self.dev_caps_o_len > 0)
             self.get_report_btn.setEnabled(self.dev_caps_i_len > 0)
-            self.update_run_btn_state()
+            self.update_ui_state()
 
     def run_all(self):
         if not self.dev or not self.cmd_list:
             return
 
         try:
-            delay_ms = float(self.delay_input.text().strip())
+            delay_ms = float(self.action_delay_input.text().strip())
             if delay_ms < 0:
                 raise ValueError
             delay_sec = delay_ms / 1000.0
@@ -653,7 +650,7 @@ class USBHIDApp(QMainWindow):
             self.stop_run_btn.setEnabled(False)
             self.set_report_btn.setEnabled(self.dev_caps_o_len > 0)
             self.get_report_btn.setEnabled(self.dev_caps_i_len > 0)
-            self.update_run_btn_state()
+            self.update_ui_state()
 
         self.log("==========================================")
         if self.stop_requested:
@@ -801,7 +798,7 @@ class USBHIDApp(QMainWindow):
             self.get_report_btn.setEnabled(False)
             self.input_label.setText("HEX 資料輸入 (未滿長度自動補 0x00，超過則阻擋)")
 
-        self.update_run_btn_state()
+        self.update_ui_state()
 
     # ---------------------------------------------------------------------------
     # 解析並驗證傳送的封包 (長度超過直接阻擋，未滿則自動補 0x00)
@@ -933,7 +930,7 @@ class USBHIDApp(QMainWindow):
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
     try:
-        myappid = "neilxia.usbhidrwtool.gui.1.0"
+        myappid = "neilxia.usbhidrwtool.qt.1.0"
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)
     except Exception:
         pass
