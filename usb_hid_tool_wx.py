@@ -247,6 +247,9 @@ class USBHIDFrame(wx.Frame):
         # 視窗關閉事件綁定
         self.Bind(wx.EVT_CLOSE, self.on_close)
 
+        # 初始化連線狀態控制 (停用未連線的組件)
+        self.update_ui_state()
+
         # 啟動時自動掃描一次裝置
         self.refresh_devices()
 
@@ -313,11 +316,6 @@ class USBHIDFrame(wx.Frame):
         self.chk_set_report = wx.CheckBox(parent, label="Set Report")
         self.chk_get_report = wx.CheckBox(parent, label="Get Report")
 
-        # 預設勾選，但未連線前禁用
-        for chk in [self.chk_set_feature, self.chk_get_feature, self.chk_set_report, self.chk_get_report]:
-            chk.SetValue(True)
-            chk.Enable(False)
-
         action_delay_label = wx.StaticText(parent, label="執行項目間隔時間 (ms):")
         self.action_delay_input = wx.TextCtrl(parent, value="100", size=(50, -1))
 
@@ -380,7 +378,6 @@ class USBHIDFrame(wx.Frame):
         self.get_report_btn.Bind(wx.EVT_BUTTON, self.on_btn_get_report)
 
         for btn in [self.set_feature_btn, self.get_feature_btn, self.set_report_btn, self.get_report_btn]:
-            btn.Enable(False)
             sizer.Add(btn, 1, wx.ALL, 5)
 
         return sizer
@@ -449,7 +446,8 @@ class USBHIDFrame(wx.Frame):
 
     def on_convert_toggled(self, event):
         """根據「自動Report ID轉換」勾選狀態連動決定輸入框是否可用"""
-        self.get_report_id_input.Enable(self.chk_auto_convert.IsChecked())
+        is_chk = self.chk_auto_convert.IsChecked() and self.chk_auto_convert.IsEnabled()
+        self.get_report_id_input.Enable(is_chk)
 
     # ---------------------------------------------------------------------------
     # 全時背景監控管理 (CallAfter 核心)
@@ -485,21 +483,13 @@ class USBHIDFrame(wx.Frame):
         self.dev_caps_o_len = 0
         self.dev_caps_f_len = 0
 
-        # 重置 UI 按鈕與 CheckBox 狀態
+        # 重置 UI 按鈕狀態
         self.connect_btn.SetLabel("Connect")
         self.device_combo.Enable(True)
         self.refresh_btn.Enable(True)
-        self.set_feature_btn.Enable(False)
-        self.get_feature_btn.Enable(False)
-        self.set_report_btn.Enable(False)
-        self.get_report_btn.Enable(False)
-        self.stop_run_btn.Enable(False)
-
-        for chk in [self.chk_set_feature, self.chk_get_feature, self.chk_set_report, self.chk_get_report]:
-            chk.Enable(False)
 
         self.input_label.SetLabel("HEX 資料輸入 (未滿長度自動補 0x00，超過則阻擋)")
-        self.update_run_btn_state()
+        self.update_ui_state()
 
         self.log("[系統] 警告: 當前連線的 USB 裝置已被拔除，已自動中斷連線！")
         wx.MessageBox("偵測到 USB 裝置已被拔除，系統已自動斷開連線！", "裝置拔除提示", wx.OK | wx.ICON_WARNING, self)
@@ -555,40 +545,66 @@ class USBHIDFrame(wx.Frame):
         except Exception as e:
             wx.MessageBox(f"儲存檔案失敗:\n{e}", "錯誤", wx.OK | wx.ICON_ERROR, self)
 
-    def update_run_btn_state(self):
-        """根據連線狀態、裝置 CAPS 長度與 CMD 列表，動態控制按鈕與 CheckBox 開關"""
+    def update_ui_state(self, preserve_checkboxes=False):
+        """根據連線狀態、裝置 CAPS 長度與 CMD 列表，動態控制按鈕與 CheckBox 開關與勾選狀態"""
         is_connected = self.dev is not None
         has_commands = len(self.cmd_list) > 0
 
-        # 若未連線，控制項全關
+        self.load_cmd_btn.Enable(is_connected)
+        self.action_delay_input.Enable(is_connected)
+
         if not is_connected:
             self.run_one_btn.Enable(False)
             self.run_all_btn.Enable(False)
+            self.stop_run_btn.Enable(False)
+
             self.set_feature_btn.Enable(False)
             self.get_feature_btn.Enable(False)
             self.set_report_btn.Enable(False)
             self.get_report_btn.Enable(False)
+
             for chk in [self.chk_set_feature, self.chk_get_feature, self.chk_set_report, self.chk_get_report]:
+                chk.SetValue(False)
                 chk.Enable(False)
+
+            # 未連線時 convert_layout 停用
+            self.chk_auto_convert.SetValue(False)
+            self.chk_auto_convert.Enable(False)
+            self.get_report_id_input.Enable(False)
             return
 
-        # 根據 CAPS 長度啟用/禁用個別按鈕與 CheckBox
         has_f = self.dev_caps_f_len > 0
         has_o = self.dev_caps_o_len > 0
         has_i = self.dev_caps_i_len > 0
 
+        # Set / Get Feature (對應 F)
         self.set_feature_btn.Enable(has_f)
         self.get_feature_btn.Enable(has_f)
         self.chk_set_feature.Enable(has_f)
         self.chk_get_feature.Enable(has_f)
 
+        # Set Report (對應 O)
         self.set_report_btn.Enable(has_o)
         self.chk_set_report.Enable(has_o)
 
+        # Get Report (對應 I)
         self.get_report_btn.Enable(has_i)
         self.chk_get_report.Enable(has_i)
 
-        # 只要有一項長度支援即可啟用 Run One，Run All 需額外有命令清單
+        # 只有在 preserve_checkboxes=False 時才重新設定勾選狀態
+        if not preserve_checkboxes:
+            self.chk_set_feature.SetValue(has_f)
+            self.chk_get_feature.SetValue(has_f)
+            self.chk_set_report.SetValue(has_o)
+            self.chk_get_report.SetValue(has_i)
+
+        can_convert = has_o and has_i
+        self.chk_auto_convert.Enable(can_convert)
+        if not preserve_checkboxes:
+            self.chk_auto_convert.SetValue(can_convert)
+
+        self.get_report_id_input.Enable(can_convert and self.chk_auto_convert.IsChecked())
+
         any_valid_caps = has_f or has_o or has_i
         self.run_one_btn.Enable(any_valid_caps)
         self.run_all_btn.Enable(any_valid_caps and has_commands)
@@ -637,7 +653,7 @@ class USBHIDFrame(wx.Frame):
                 self.cmd_combo.Enable(False)
                 wx.MessageBox("檔案內未解析到符合 [Name],[HEX] 格式的命令！", "警告", wx.OK | wx.ICON_WARNING, self)
 
-            self.update_run_btn_state()
+            self.update_ui_state(preserve_checkboxes=True)
 
         except Exception as e:
             self.cmd_combo.Enable(False)
@@ -722,7 +738,7 @@ class USBHIDFrame(wx.Frame):
             self.log("==========================================")
 
         finally:
-            self.update_run_btn_state()
+            self.update_ui_state(preserve_checkboxes=True)
 
     def run_all(self):
         if not self.dev or not self.cmd_list:
@@ -790,7 +806,7 @@ class USBHIDFrame(wx.Frame):
         finally:
             self.stop_requested = False
             self.stop_run_btn.Enable(False)
-            self.update_run_btn_state()
+            self.update_ui_state(preserve_checkboxes=True)
 
         self.log("==========================================")
         if self.stop_requested:
@@ -935,7 +951,7 @@ class USBHIDFrame(wx.Frame):
             self.refresh_btn.Enable(True)
             self.input_label.SetLabel("HEX 資料輸入 (未滿長度自動補 0x00，超過則阻擋)")
 
-        self.update_run_btn_state()
+        self.update_ui_state()
 
     # ---------------------------------------------------------------------------
     # 解析並驗證傳送的封包 (長度超過直接阻擋，未滿則自動補 0x00)
@@ -1047,7 +1063,7 @@ class USBHIDFrame(wx.Frame):
         try:
             target_report_id = None
 
-            if self.chk_auto_convert.IsChecked():
+            if self.chk_auto_convert.IsChecked() and self.chk_auto_convert.IsEnabled():
                 id_hex_str = self.get_report_id_input.GetValue().strip()
                 if not id_hex_str:
                     wx.MessageBox(
@@ -1107,7 +1123,7 @@ class USBHIDFrame(wx.Frame):
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
     try:
-        myappid = "neilxia.usbhidtool.1.0"
+        myappid = "neilxia.usbhidtool.wx.1.0"
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)
     except Exception:
         pass
