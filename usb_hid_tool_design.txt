@@ -1,0 +1,109 @@
+================================================================
+            USB HID Tool (wxPython) 系統架構與設計說明書
+================================================================
+
+一、 核心流程架構 (System Architecture Overview)
+-------------------------------------------------------------------------------
+[應用程式啟動]
+   │
+   ├── 步驟 1: 設定 Windows AppUserModelID (Taskbar 圖示獨立顯示)
+   ├── 步驟 2: 載入應用程式圖示 (get_resource_path - 相容 PyInstaller 打包環境)[cite: 8]
+   ├── 步驟 3: 初始化 GUI 主視窗 (USBHIDFrame) 並構建 5 大 UI 區塊[cite: 8]
+   ├── 步驟 4: 啟動全時背景監控 Thread (USBGlobalMonitorThread，含 Debounce 防抖動)[cite: 8]
+   └── 步驟 5: 執行啟動首次掃描 (refresh_devices)[cite: 8]
+         ├── 過濾未知裝置 (自動 Mask 無 Name/Manufacturer 的 Unknown 裝置)[cite: 8]
+         ├── 透過 Win32 HID API (HidP_GetCaps) 讀取 Input/Output/Feature Report 長度[cite: 8]
+         ├── 按 VID -> PID -> Product String 自動進行排序[cite: 8]
+         └── 將格式化字串寫入 Device ComboBox 選單[cite: 8]
+   │
+[使用者操作連線 / 中斷]
+   │
+   ├── 點擊 "Connect" (toggle_connect)[cite: 8]
+   │     ├── 檢查 CAPS 長度 (若 Input, Output, Feature 皆為 0 Bytes 則拒絕連線)[cite: 8]
+   │     ├── 透過 hid.device().open_path() 開啟裝置並設為 Non-blocking 模式[cite: 8]
+   │     ├── 將連線 Device Path 設定給 Monitor Thread 進行專屬拔除監控[cite: 8]
+   │     └── 依據 CAPS 長度與可用的 Report 類型動態開關 UI 功能與 CheckBoxes[cite: 8]
+   │
+   └── 點擊 "Disconnect" 或觸發突發拔除[cite: 8]
+         ├── 清除 Monitor Thread 的 Target Path[cite: 8]
+         ├── 關閉 hid.device 並釋放資源[cite: 8]
+         └── 重置 UI 按鈕狀態與輸入框提示文字[cite: 8]
+   │
+[命令載入與資料解析]
+   │
+   ├── 載入檔案 (load_cmd_file)[cite: 8]
+   │     ├── 解析符合 `[CmdName],[HEX]` 格式之純文字檔[cite: 8]
+   │     └── 填入 Command ComboBox 選單並動態鎖定/啟用介面[cite: 8]
+   │
+   └── 封包組裝驗證 (_prepare_payload)[cite: 8]
+         ├── 格式檢查: 移除空格並驗證有效 HEX 字串[cite: 8]
+         ├── Report ID 自動覆寫: 若啟用 Get Report 轉換，重置 Byte[0][cite: 8]
+         ├── 長度嚴格限制: 輸入超過 CAPS 長度則阻擋發送，維護 Protocol 完整性[cite: 8]
+         └── 自動 Padding: 長度未滿 CAPS 要求時，自動向後補 0x00 至指定長度[cite: 8]
+   │
+[單次 / 批次命令執行機制]
+   │
+   ├── 手動獨立操作 (Set/Get Feature, Set/Get Report 按鈕)[cite: 8]
+   ├── Run One (單組批次測試)[cite: 8]
+   │     └── 根據 4 個 CheckBox 勾選項目依次執行，搭配 _safe_delay() 延遲[cite: 8]
+   └── Run All (多組命令自動化測試)[cite: 8]
+         ├── 歷遍 CMD 列表中所有命令，套用勾選的 CheckBox 動作群[cite: 8]
+         ├── 支援 Stop 手動安全中斷機制 (等待當前動作完成後中斷)[cite: 8]
+         └── 搭配 wx.Yield() 與安全延遲，確保 UI 在高頻通訊下不卡死[cite: 8]
+   │
+[裝置意外拔除與系統關閉]
+   │
+   ├── 背景 Thread 偵測連線裝置消失 -> wx.CallAfter 觸發 handle_unexpected_disconnect()[cite: 8]
+   │     ├── 自動中斷連線、中斷進行中的 Run All[cite: 8]
+   │     ├── 重置 UI 狀態並跳出 Warning 警告對話框[cite: 8]
+   │     └── 寫入系統 Log[cite: 8]
+   └── 視窗關閉 (on_close) -> 停止 Monitor Thread -> 釋放 HID Device -> 銷毀視窗[cite: 8]
+
+
+二、 UI 區塊化設計說明 (UI Section Structure)
+-------------------------------------------------------------------------------
+1. 裝置選擇與連線控制區 (Device Section)
+   - [Refresh] 按鈕：手動重新掃描 USB HID 裝置[cite: 8]。
+   - [Device ComboBox]：顯示 `[VID, PID] (I=x, O=y, F=z) | Product (Manufacturer)`[cite: 8]。
+   - [Connect / Disconnect] 按鈕：切換裝置連線狀態[cite: 8]。
+
+2. 命令載入與批次測試區 (Command Section)
+   - [Load CMD List] 按鈕：載入 `.txt` 命令對照表[cite: 8]。
+   - [CMD ComboBox]：選擇已載入的命令，自動填寫 HEX 至輸入框[cite: 8]。
+   - [Run One] / [Run All] / [Stop] 按鈕：控制單組或批次自動化測試執行[cite: 8]。
+   - [Batch CheckBoxes]：Set Feature / Get Feature / Set Report / Get Report 4 項可獨立勾選[cite: 8]。
+   - [delay_input]：設定動作間隔毫秒數 (ms)[cite: 8]。
+
+3. 資料輸入與轉置區 (Data Section)
+   - [HEX Input]：多行 (Multi-line) 文字輸入框，支援顯示長 HEX 封包[cite: 8]。
+   - [Auto Convert CheckBox & Report ID Input]：
+     支援啟用 Get Report 封包轉換，可指定取代 Byte[0] 之 Report ID (預設 0x07)[cite: 8]。
+
+4. 獨立動作按鈕區 (Action Section)
+   - 提供 [Set Feature]、[Get Feature]、[Set Report]、[Get Report] 四個實體按鈕，
+     並會依據連線裝置之 CAPS (I/O/F) 長度自動啟用或停用[cite: 8]。
+
+5. 日誌紀錄區 (Log Section)
+   - [Log TextCtrl]：顯示含毫秒級時間戳記 `[HH:MM:SS.mmm]` 的操作與收發通訊紀錄[cite: 8]。
+   - [Clear Log] / [Save Log] 按鈕：提供 Log 內容即時清除與匯出 `.txt`/`.log` 檔案功能[cite: 8]。
+
+
+三、 核心關鍵技術與 Win32 API 應用 (Technical Details)
+-------------------------------------------------------------------------------
+1. 資源路徑解析 (`get_resource_path`)
+   - 透過檢查 `sys._MEIPASS` 判斷當前為 Python 開發環境或 PyInstaller 打包後的單獨 EXE 環境，確保 `.ico` 等外部資源載入正常[cite: 8]。
+
+2. Win32 API 直接存取與 CAPS 解析 (`HIDP_CAPS` & `get_hid_report_lengths`)
+   - 使用 `ctypes` 呼叫 `CreateFileW`, `HidD_GetPreparsedData` 及 `HidP_GetCaps`[cite: 8]。
+   - 精確取得裝置宣告的 Input Report, Output Report 與 Feature Report Byte 長度[cite: 8]。
+
+3. Control Pipe 索取 Input Report (`win32_get_input_report`)
+   - 針對特定不走 Interrupt Pipe 的 Get Report 需求，繞過部分底層限制，直接呼叫 Win32 原生 API `HidD_GetInputReport` 主動發送 Control Pipe Request 取得 Input Report 內容[cite: 8]。
+
+4. 全時背景熱插拔監測 (`USBGlobalMonitorThread`)
+   - 以獨立 Daemon Thread 背景運行 `hid.enumerate()` 監控[cite: 8]。
+   - **Debounce 防抖動處理**：引入時間採樣與計時機制 (預設 0.3s)，避免硬體插入/拔除瞬間頻繁觸發 UI 更新[cite: 8]。
+   - **專屬拔除監控**：當連線中裝置的 Path 消失時，立即透過 `wx.CallAfter` 安全地傳遞 Callback 至 GUI 執行緒中斷連線並警告使用者[cite: 8]。
+
+5. 安全非阻塞式延遲 (`_safe_delay`)
+   - 在批次執行與命令間隔期間，結合 `wx.Yield()` 與短暫 `time.sleep()`，確保 UI 介面（包含 Stop 按鈕與視窗重繪）在高頻率資料收發時依然保持回應[cite: 8]。
