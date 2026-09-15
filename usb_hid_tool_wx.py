@@ -16,7 +16,7 @@ import wx
 def get_resource_path(relative_path):
     """取得資源檔案的絕對路徑，兼容開發環境與 PyInstaller 打包環境"""
     if hasattr(sys, "_MEIPASS"):
-        base_path = Path(sys._MEIPASS)
+        base_path = Path(sys._MEIPASS)  # type: ignore[attr-defined]
     else:
         base_path = Path(__file__).resolve().parent
     return base_path / relative_path
@@ -194,13 +194,13 @@ class USBGlobalMonitorThread(threading.Thread):
                     self.last_device_paths = self.pending_paths
                     self.pending_paths = None
                     if self.on_usb_changed_cb:
-                        wx.CallAfter(self.on_usb_changed_cb)
+                        wx.CallAfter(self.on_usb_changed_cb)  # type: ignore[reportCallIssue]
 
             # 若當前有連線中的目標裝置，專門檢查該裝置是否仍然存在
             if self.target_path:
                 if self.target_path not in current_paths:
                     if self.on_target_disconnected_cb:
-                        wx.CallAfter(self.on_target_disconnected_cb)
+                        wx.CallAfter(self.on_target_disconnected_cb)  # type: ignore[reportCallIssue]
                     self.target_path = None  # 避免重複觸發
 
     def stop(self):
@@ -212,8 +212,8 @@ class USBGlobalMonitorThread(threading.Thread):
 # ---------------------------------------------------------------------------
 class USBHIDFrame(wx.Frame):
     def __init__(self):
-        super().__init__(None, title="USB HID Tool", size=(800, 600))
-        self.SetMinSize((640, 480))
+        super().__init__(None, title="USB HID Tool", size=wx.Size(800, 600))
+        self.SetMinSize(wx.Size(640, 480))
 
         self.dev = None
         self.connected_path = None
@@ -289,15 +289,15 @@ class USBHIDFrame(wx.Frame):
         self.cmd_combo.Bind(wx.EVT_COMBOBOX, self.on_cmd_selected)
         self.cmd_combo.Enable(False)
 
-        self.run_one_btn = wx.Button(parent, label="Run One", size=(70, -1))
+        self.run_one_btn = wx.Button(parent, label="Run One", size=wx.Size(70, -1))
         self.run_one_btn.Bind(wx.EVT_BUTTON, self.on_btn_run_one)
         self.run_one_btn.Enable(False)
 
-        self.run_all_btn = wx.Button(parent, label="Run All", size=(70, -1))
+        self.run_all_btn = wx.Button(parent, label="Run All", size=wx.Size(70, -1))
         self.run_all_btn.Bind(wx.EVT_BUTTON, self.on_btn_run_all)
         self.run_all_btn.Enable(False)
 
-        self.stop_run_btn = wx.Button(parent, label="Stop", size=(70, -1))
+        self.stop_run_btn = wx.Button(parent, label="Stop", size=wx.Size(70, -1))
         self.stop_run_btn.Bind(wx.EVT_BUTTON, self.on_btn_stop_run)
         self.stop_run_btn.Enable(False)
 
@@ -317,7 +317,7 @@ class USBHIDFrame(wx.Frame):
         self.chk_get_report = wx.CheckBox(parent, label="Get Report")
 
         action_delay_label = wx.StaticText(parent, label="執行項目間隔時間 (ms):")
-        self.action_delay_input = wx.TextCtrl(parent, value="100", size=(50, -1))
+        self.action_delay_input = wx.TextCtrl(parent, value="100", size=wx.Size(50, -1))
 
         r2_sizer.Add(lbl_batch, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 5)
         r2_sizer.Add(self.chk_set_feature, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 5)
@@ -339,7 +339,7 @@ class USBHIDFrame(wx.Frame):
         sizer.Add(self.input_label, 0, wx.ALL, 5)
 
         # 加入 wx.TE_MULTILINE 樣式，並設定高度為 36 像素（約可剛好顯示兩排文字）
-        self.hex_input = wx.TextCtrl(parent, style=wx.TE_MULTILINE | wx.TE_BESTWRAP, size=(-1, 36))
+        self.hex_input = wx.TextCtrl(parent, style=wx.TE_MULTILINE | wx.TE_BESTWRAP, size=wx.Size(-1, 36))
         # 保留原本的單行輸入框，但改為多行輸入框以支援更長的 HEX 字串
         # self.hex_input = wx.TextCtrl(parent)
         self.hex_input.SetHint("例如: 00 01 02 03 或 06 06 00 05 5A 02 00 23 2F")
@@ -351,7 +351,7 @@ class USBHIDFrame(wx.Frame):
         self.chk_auto_convert.Bind(wx.EVT_CHECKBOX, self.on_convert_toggled)
 
         convert_label = wx.StaticText(parent, label="0x")
-        self.get_report_id_input = wx.TextCtrl(parent, value="07", size=(40, -1))
+        self.get_report_id_input = wx.TextCtrl(parent, value="07", size=wx.Size(40, -1))
         self.get_report_id_input.SetMaxLength(2)
 
         convert_sizer.Add(self.chk_auto_convert, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 5)
@@ -1090,6 +1090,8 @@ class USBHIDFrame(wx.Frame):
             success, res = win32_get_input_report(self.connected_path, request_bytes, self.dev_caps_i_len)
 
             if success:
+                # 告訴靜態分析器此時 res 必為 bytes
+                assert isinstance(res, bytes)
                 recv_bytes = res
                 ret_report_id = recv_bytes[0] if len(recv_bytes) > 0 else 0x00
                 self.log(

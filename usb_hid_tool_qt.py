@@ -32,7 +32,7 @@ from PyQt6.QtGui import QIcon
 def get_resource_path(relative_path):
     """取得資源檔案的絕對路徑，兼容開發環境與 PyInstaller 打包環境"""
     if hasattr(sys, "_MEIPASS"):
-        base_path = Path(sys._MEIPASS)
+        base_path = Path(sys._MEIPASS)  # type: ignore[attr-defined]
     else:
         base_path = Path(__file__).resolve().parent
     return base_path / relative_path
@@ -1039,6 +1039,8 @@ class USBHIDApp(QMainWindow):
             success, res = win32_get_input_report(self.connected_path, request_bytes, self.dev_caps_i_len)
 
             if success:
+                # 告訴靜態分析器此時 res 必為 bytes
+                assert isinstance(res, bytes)
                 recv_bytes = res
                 ret_report_id = recv_bytes[0] if len(recv_bytes) > 0 else 0x00
                 self.log(
