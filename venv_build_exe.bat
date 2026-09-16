@@ -9,7 +9,7 @@ cd /d "%~dp0"
 set "USER_PYTHON=%LOCALAPPDATA%\Programs\Python\Python312\python.exe"
 
 :: 2. 定義專屬 Python 3.12 虛擬環境中的執行檔路徑
-set "VENV_DIR=venv_build_312"
+set "VENV_DIR=venv_build"
 set "VENV_PYTHON=%VENV_DIR%\Scripts\python.exe"
 set "VENV_PYINSTALLER=%VENV_DIR%\Scripts\pyinstaller.exe"
 
