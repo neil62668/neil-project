@@ -44,32 +44,38 @@ echo   [VENV Version Check]
 "%VENV_PYTHON%" --version
 echo.
 
-:: 5. 執行 venv 內部的 PyInstaller 打包
+:: 5. 設定 PyInstaller 分類排除 (Excludes) 參數
+set "EXCLUDES="
+
+:: [類別 1] GUI 與繪圖框架 (已使用 wxPython，排除其他 UI)
+set "EXCLUDES=!EXCLUDES! --exclude-module tkinter"
+
+:: [類別 2] 網路通訊、郵件與遠端服務
+set "EXCLUDES=!EXCLUDES! --exclude-module ftplib --exclude-module http --exclude-module imaplib --exclude-module poplib --exclude-module smtplib --exclude-module socketserver --exclude-module xmlrpc"
+
+:: [類別 3] 加密、安全與編碼 (若無 HTTPS 請求或 Hash 計算需求可排除)
+set "EXCLUDES=!EXCLUDES! --exclude-module _hashlib --exclude-module ssl --exclude-module unicodedata"
+
+:: [類別 4] 多程序與進階併發 (已使用標準 threading，排除其他併發庫)
+set "EXCLUDES=!EXCLUDES! --exclude-module asyncio --exclude-module multiprocessing --exclude-module concurrent"
+
+:: [類別 5] 資料庫、壓縮與資料格式 (無 SQLite、特殊壓縮或 XML 需求即可排除)
+set "EXCLUDES=!EXCLUDES! --exclude-module dbm --exclude-module sqlite3 --exclude-module xml --exclude-module bz2 --exclude-module lzma --exclude-module zoneinfo"
+
+:: [類別 6] 開發輔助、測試與除錯工具 (生產環境 EXE 無需打包)
+set "EXCLUDES=!EXCLUDES! --exclude-module doctest --exclude-module email --exclude-module pdb --exclude-module pstats --exclude-module profile --exclude-module pydoc --exclude-module test --exclude-module unittest"
+
+:: [類別 7] wxPython 未使用的高級介面元件
+set "EXCLUDES=!EXCLUDES! --exclude-module wx.activex --exclude-module wx.adv --exclude-module wx.aui --exclude-module wx.dataview --exclude-module wx.glcanvas --exclude-module wx.grid --exclude-module wx.html --exclude-module wx.html2 --exclude-module wx.media --exclude-module wx.propgrid --exclude-module wx.py --exclude-module wx.ribbon --exclude-module wx.stc --exclude-module wx.xml --exclude-module wx.xrc"
+
+:: 6. 執行 venv 內部的 PyInstaller 打包
 echo ===================================================
 echo   Starting PyInstaller Build Process (Python 3.12)...
 echo ===================================================
 "%VENV_PYINSTALLER%" --noconfirm --onefile --windowed ^
   --icon=usb_hid_tool.ico ^
   --add-data "usb_hid_tool.ico;." ^
-  --exclude-module asyncio ^
-  --exclude-module multiprocessing ^
-  --exclude-module xmlrpc ^
-  --exclude-module pydoc ^
-  --exclude-module email ^
-  --exclude-module tkinter ^
-  --exclude-module _hashlib ^
-  --exclude-module ssl ^
-  --exclude-module unicodedata ^
-  --exclude-module wx.adv ^
-  --exclude-module wx.html ^
-  --exclude-module wx.html2 ^
-  --exclude-module wx.xml ^
-  --exclude-module wx.xrc ^
-  --exclude-module wx.media ^
-  --exclude-module wx.stc ^
-  --exclude-module wx.ribbon ^
-  --exclude-module wx.propgrid ^
-  --exclude-module wx.py ^
+  !EXCLUDES! ^
   usb_hid_tool_wx.py
 
 echo.
