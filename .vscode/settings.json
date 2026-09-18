@@ -1,0 +1,18 @@
+{
+    "python.terminal.activateEnvironment": true,
+    "python-envs.defaultEnvManager": "ms-python.python:system",
+    "mypy.pythonPath": "${workspaceFolder}/venv_build/Scripts/python.exe",
+
+    // 自動讓 VS Code Python 外掛與 Pylance 綁定此專案的虛擬環境
+    "python.defaultInterpreterPath": "${workspaceFolder}/venv_build/Scripts/python.exe",
+
+    // 全域搜尋 (Ctrl+Shift+F) 時排除打包產物與虛擬環境庫，提升搜尋速度
+    "search.exclude": {
+        "**/build": true,
+        "**/dist": true,
+        "**/venv_build": true
+    },
+
+    // 強制寫入 UTF-8 編碼 (防止 Windows 平台下中文字元與 Bat 註解編碼衝突)
+    "files.encoding": "utf8"
+}
