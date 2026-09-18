@@ -1,4 +1,12 @@
-.vscode/
+cmd_list/
+# Python 虛擬環境與快取
+venv_build/
+*.pyc
+# PyInstaller 建置產物與設定檔
 build/
 dist/
-venv_build
+*.spec
+# VS Code 相關
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
