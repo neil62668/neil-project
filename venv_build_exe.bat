@@ -94,6 +94,22 @@ if %ERRORLEVEL% EQU 0 (
         
         echo   EXE Location: !EXE_PATH!
         echo   EXE File Size: !SIZE_MB_INT!.!SIZE_MB_DEC! MB ^(!FILE_SIZE_BYTES! bytes^)
+        
+        :: 7. 複製檔案至指定的目的資料夾
+        set "TARGET_DIR=D:\Neil_Project\#USB_HID\NeilHIDTool"
+        echo.
+        echo   [DEPLOY] Deploying EXE to target directory...
+        if not exist "!TARGET_DIR!" (
+            echo   Target directory does not exist. Creating: !TARGET_DIR!
+            mkdir "!TARGET_DIR!"
+        )
+        
+        copy /y "!EXE_PATH!" "!TARGET_DIR!\" >nul
+        if !ERRORLEVEL! EQU 0 (
+            echo   SUCCESS: Copied to "!TARGET_DIR!\usb_hid_tool_wx.exe"
+        ) else (
+            echo   ERROR: Failed to copy EXE file.
+        )
     )
     echo ===================================================
 ) else (
