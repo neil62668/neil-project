@@ -66,7 +66,7 @@ set "EXCLUDES=!EXCLUDES! --exclude-module dbm --exclude-module sqlite3 --exclude
 set "EXCLUDES=!EXCLUDES! --exclude-module doctest --exclude-module email --exclude-module pdb --exclude-module pstats --exclude-module profile --exclude-module pydoc --exclude-module test --exclude-module unittest"
 
 :: [類別 7] wxPython 未使用的高級介面元件
-set "EXCLUDES=!EXCLUDES! --exclude-module wx.activex --exclude-module wx.adv --exclude-module wx.aui --exclude-module wx.dataview --exclude-module wx.glcanvas --exclude-module wx.grid --exclude-module wx.html --exclude-module wx.html2 --exclude-module wx.media --exclude-module wx.propgrid --exclude-module wx.py --exclude-module wx.ribbon --exclude-module wx.stc --exclude-module wx.xml --exclude-module wx.xrc"
+set "EXCLUDES=!EXCLUDES! --exclude-module wx.activex --exclude-module wx.aui --exclude-module wx.dataview --exclude-module wx.glcanvas --exclude-module wx.grid --exclude-module wx.html2 --exclude-module wx.media --exclude-module wx.propgrid --exclude-module wx.py --exclude-module wx.ribbon --exclude-module wx.stc --exclude-module wx.xrc"
 
 :: 6. 執行 venv 內部的 PyInstaller 打包
 echo ===================================================
@@ -119,4 +119,3 @@ if %ERRORLEVEL% EQU 0 (
 )
 
 echo.
-pause
