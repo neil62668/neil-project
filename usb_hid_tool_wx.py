@@ -572,9 +572,7 @@ class USBHIDFrame(wx.Frame):
         if len(raw_bytes) >= (len_offset + len_length):
             len_bytes = raw_bytes[len_offset : len_offset + len_length]
             byte_order = "big" if is_big_endian else "little"
-            payload_len = (
-                int.from_hex(len_bytes.hex()) if hasattr(bytes, "from_hex") else int.from_bytes(len_bytes, byte_order)
-            )
+            payload_len = int.from_bytes(len_bytes, byte_order)
 
         # 印出第一行標題 (預設黑色)
         self.log_text.BeginTextColour(wx.BLACK)

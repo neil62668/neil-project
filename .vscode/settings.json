@@ -1,10 +1,17 @@
 {
     "python.terminal.activateEnvironment": true,
-    "python-envs.defaultEnvManager": "ms-python.python:system",
+    "python-envs.defaultEnvManager": "ms-python.python:venv",
     "mypy.pythonPath": "${workspaceFolder}/venv_build/Scripts/python.exe",
 
     // 自動讓 VS Code Python 外掛與 Pylance 綁定此專案的虛擬環境
     "python.defaultInterpreterPath": "${workspaceFolder}/venv_build/Scripts/python.exe",
+
+    // 關鍵修復：指引 Pylance 讀取你的 stubs 存根目錄與虛擬環境套件庫
+    "python.analysis.stubPath": "stubs",
+    "python.analysis.extraPaths": [
+        "stubs",
+        "${workspaceFolder}/venv_build/Lib/site-packages"
+    ],
 
     // 全域搜尋 (Ctrl+Shift+F) 時排除打包產物與虛擬環境庫，提升搜尋速度
     "search.exclude": {
