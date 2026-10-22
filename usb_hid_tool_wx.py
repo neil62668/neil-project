@@ -586,7 +586,7 @@ class USBHIDFrame(wx.Frame):
         if not self.chk_enable_highlight.IsChecked():
             hex_str = raw_bytes.hex(" ").upper()
             self.log_text.WriteText(hex_str + "\n")
-            self.log_text.EndTextColour()
+            self.log_text.BeginTextColour(wx.BLACK)
             self.log_text.ShowPosition(self.log_text.GetLastPosition())
             return
 
