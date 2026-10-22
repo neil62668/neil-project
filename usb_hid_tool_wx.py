@@ -216,8 +216,8 @@ class USBGlobalMonitorThread(threading.Thread):
 # ---------------------------------------------------------------------------
 class USBHIDFrame(wx.Frame):
     def __init__(self):
-        super().__init__(None, title="USB HID Tool", size=wx.Size(800, 650))
-        self.SetMinSize(wx.Size(640, 520))
+        super().__init__(None, title="USB HID Tool", size=wx.Size(800, 680))
+        self.SetMinSize(wx.Size(640, 540))
 
         self.dev = None
         self.connected_path = None
@@ -387,38 +387,49 @@ class USBHIDFrame(wx.Frame):
         """5. 通訊日誌顯示與匯出控制區塊"""
         sizer = wx.BoxSizer(wx.VERTICAL)
 
-        # 第一排：Log Data Highlight 設定區塊
+        # 第一排：兩個 CheckBox 開關
         r1_sizer = wx.BoxSizer(wx.HORIZONTAL)
 
-        lbl_highlight = wx.StaticText(parent, label="封包資料高亮設定:")
+        self.chk_enable_highlight = wx.CheckBox(parent, label="啟用封包資料高亮設定")
+        self.chk_enable_highlight.SetValue(True)  # 預設開啟
+        self.chk_enable_highlight.Bind(wx.EVT_CHECKBOX, self.on_highlight_toggled)
 
-        lbl_len_offset = wx.StaticText(parent, label="長度欄位偏移:")
-        self.txt_len_offset = wx.TextCtrl(parent, value="1", size=wx.Size(30, -1))
-
-        lbl_len_length = wx.StaticText(parent, label="長度欄位所佔位元組大小:")
-        self.txt_len_length = wx.TextCtrl(parent, value="1", size=wx.Size(30, -1))
-
-        self.chk_big_endian = wx.CheckBox(parent, label="長度欄位數值是否為Big-Endian排列")
+        self.chk_big_endian = wx.CheckBox(parent, label="長度欄位數值為 Big-Endian 排列")
         self.chk_big_endian.SetValue(False)  # 預設 Little-Endian
 
-        lbl_payload_offset = wx.StaticText(parent, label="資料欄位偏移:")
-        self.txt_payload_offset = wx.TextCtrl(parent, value="3", size=wx.Size(30, -1))
-
-        r1_sizer.Add(lbl_highlight, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 5)
-        r1_sizer.Add(lbl_len_offset, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 2)
-        r1_sizer.Add(self.txt_len_offset, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 2)
-        r1_sizer.Add(lbl_len_length, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 2)
-        r1_sizer.Add(self.txt_len_length, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 2)
+        r1_sizer.Add(self.chk_enable_highlight, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 5)
+        r1_sizer.AddSpacer(15)
         r1_sizer.Add(self.chk_big_endian, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 5)
-        r1_sizer.Add(lbl_payload_offset, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 2)
-        r1_sizer.Add(self.txt_payload_offset, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 2)
 
-        # 第二排：Log 清除與匯出按鈕區塊
+        # 第二排：偏移量與長度的參數輸入框
         r2_sizer = wx.BoxSizer(wx.HORIZONTAL)
 
+        lbl_len_offset = wx.StaticText(parent, label="長度欄位偏移 (Offset):")
+        self.txt_len_offset = wx.TextCtrl(parent, value="1", size=wx.Size(35, -1))
+
+        lbl_len_length = wx.StaticText(parent, label="長度欄位大小 (Bytes):")
+        self.txt_len_length = wx.TextCtrl(parent, value="1", size=wx.Size(35, -1))
+
+        lbl_payload_offset = wx.StaticText(parent, label="資料欄位偏移 (Offset):")
+        self.txt_payload_offset = wx.TextCtrl(parent, value="3", size=wx.Size(35, -1))
+
+        r2_sizer.Add(lbl_len_offset, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 5)
+        r2_sizer.Add(self.txt_len_offset, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 5)
+        r2_sizer.AddSpacer(10)
+
+        r2_sizer.Add(lbl_len_length, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 5)
+        r2_sizer.Add(self.txt_len_length, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 5)
+        r2_sizer.AddSpacer(10)
+
+        r2_sizer.Add(lbl_payload_offset, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 5)
+        r2_sizer.Add(self.txt_payload_offset, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 5)
+
+        # 第三排：Log 標題與 Clear / Save 按鈕
+        r3_sizer = wx.BoxSizer(wx.HORIZONTAL)
+
         lbl_log = wx.StaticText(parent, label="輸出日誌:")
-        r2_sizer.Add(lbl_log, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 5)
-        r2_sizer.AddStretchSpacer(1)
+        r3_sizer.Add(lbl_log, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 5)
+        r3_sizer.AddStretchSpacer(1)
 
         self.clear_log_btn = wx.Button(parent, label="Clear Log")
         self.clear_log_btn.Bind(wx.EVT_BUTTON, self.on_btn_clear_log)
@@ -426,25 +437,26 @@ class USBHIDFrame(wx.Frame):
         self.save_log_btn = wx.Button(parent, label="Save Log")
         self.save_log_btn.Bind(wx.EVT_BUTTON, self.on_btn_save_log)
 
-        r2_sizer.Add(self.clear_log_btn, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 5)
-        r2_sizer.Add(self.save_log_btn, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 5)
+        r3_sizer.Add(self.clear_log_btn, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 5)
+        r3_sizer.Add(self.save_log_btn, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 5)
 
-        sizer.Add(r1_sizer, 0, wx.EXPAND | wx.ALL, 2)
-        sizer.Add(r2_sizer, 0, wx.EXPAND | wx.ALL, 2)
+        # 組裝主 Sizer
+        sizer.Add(r1_sizer, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.TOP, 2)
+        sizer.Add(r2_sizer, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 2)
+        sizer.Add(r3_sizer, 0, wx.EXPAND | wx.ALL, 2)
 
         # Log 文字顯示區域 (RichTextCtrl)
         self.log_text = rt.RichTextCtrl(parent, style=wx.TE_MULTILINE | wx.TE_READONLY | wx.HSCROLL)
 
-        # 建立預設系統字型物件後，設定複合字型名稱
-        font = wx.Font(9, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL)
-        font.SetFaceName("Menlo, Microsoft JhengHei")
+        font = wx.Font(10, wx.FONTFAMILY_TELETYPE, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL)
+        font.SetFaceName("Consolas")
         self.log_text.SetFont(font)
 
         sizer.Add(self.log_text, 1, wx.EXPAND | wx.ALL, 5)
         return sizer
 
     # ---------------------------------------------------------------------------
-    # 按鈕事件處理控制點
+    # 按鈕與控制項事件處理控制點
     # ---------------------------------------------------------------------------
     def on_btn_refresh(self, event):
         self.refresh_devices()
@@ -486,6 +498,14 @@ class USBHIDFrame(wx.Frame):
         """根據「自動Report ID轉換」勾選狀態連動決定輸入框是否可用"""
         is_chk = self.chk_auto_convert.IsChecked() and self.chk_auto_convert.IsEnabled()
         self.get_report_id_input.Enable(is_chk)
+
+    def on_highlight_toggled(self, event):
+        """根據「啟用封包資料高亮設定」勾選狀態連動控制相關 GUI 輸入元件"""
+        is_enabled = self.chk_enable_highlight.IsChecked()
+        self.txt_len_offset.Enable(is_enabled)
+        self.txt_len_length.Enable(is_enabled)
+        self.chk_big_endian.Enable(is_enabled)
+        self.txt_payload_offset.Enable(is_enabled)
 
     # ---------------------------------------------------------------------------
     # 全時背景監控管理 (CallAfter 核心)
@@ -551,14 +571,28 @@ class USBHIDFrame(wx.Frame):
 
     def log_payload(self, prefix_title, raw_bytes, total_caps_len, direction="->"):
         """
-        將收發的 HEX 封包進行紅/藍色高亮解析並寫入 Log：
-        - Length Field: 紅色 (Red)
-        - Payload: 藍色 (Blue)
-        - 其餘 Header/Padding Bytes: 黑色 (Black)
+        將收發的 HEX 封包寫入 Log
         """
         timestamp = datetime.now().strftime("[%H:%M:%S.%f]")[:-3] + "]"
 
-        # 讀取元件設定值（含防呆）
+        # 確保第一行的格式與第二行的箭頭完全平行對齊
+        self.log_text.BeginTextColour(wx.BLACK)
+        self.log_text.WriteText(f"{timestamp} {prefix_title}\n")
+        self.log_text.WriteText(f"{timestamp} [{direction}] ")
+
+        # ------------------------------------------------------------------
+        # 情境 A：未啟用高亮 -> 直接輸出單色 HEX 字串
+        # ------------------------------------------------------------------
+        if not self.chk_enable_highlight.IsChecked():
+            hex_str = raw_bytes.hex(" ").upper()
+            self.log_text.WriteText(hex_str + "\n")
+            self.log_text.EndTextColour()
+            self.log_text.ShowPosition(self.log_text.GetLastPosition())
+            return
+
+        # ------------------------------------------------------------------
+        # 情境 B：啟用高亮 -> 進行 Length Field (紅) 與 Payload (藍) 解析輸出
+        # ------------------------------------------------------------------
         try:
             len_offset = int(self.txt_len_offset.GetValue().strip())
             len_length = int(self.txt_len_length.GetValue().strip())
@@ -573,13 +607,6 @@ class USBHIDFrame(wx.Frame):
             len_bytes = raw_bytes[len_offset : len_offset + len_length]
             byte_order = "big" if is_big_endian else "little"
             payload_len = int.from_bytes(len_bytes, byte_order)
-
-        # 印出第一行標題 (預設黑色)
-        self.log_text.BeginTextColour(wx.BLACK)
-        self.log_text.WriteText(f"{timestamp} {prefix_title}\n")
-
-        # 印出第二行帶有顏色的 HEX 資料
-        self.log_text.WriteText(f"{timestamp}   {direction} ")
 
         len_start_idx = len_offset
         len_end_idx = len_start_idx + len_length
