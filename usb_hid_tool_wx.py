@@ -452,6 +452,9 @@ class USBHIDFrame(wx.Frame):
         font.SetFaceName("Consolas")
         self.log_text.SetFont(font)
 
+        # 直接對 RichTextCtrl 設定 Margins
+        self.log_text.SetMargins(1, 1)
+
         sizer.Add(self.log_text, 1, wx.EXPAND | wx.ALL, 5)
         return sizer
 
@@ -552,85 +555,120 @@ class USBHIDFrame(wx.Frame):
         self.log("[系統] 警告: 當前連線的 USB 裝置已被拔除，已自動中斷連線！")
         wx.MessageBox("偵測到 USB 裝置已被拔除，系統已自動斷開連線！", "裝置拔除提示", wx.OK | wx.ICON_WARNING, self)
 
+    # ---------------------------------------------------------------------------
+    # 日誌寫入封裝 (核心底層與上層 API)
+    # ---------------------------------------------------------------------------
+    def _write_log_entry(self, write_func):
+        """
+        統一處理 RichTextCtrl 的日誌寫入流程：
+        1. 強制將游標移至最末端 (防止滑鼠選取文字後寫入位置錯亂)
+        2. 執行寫入邏輯
+        3. 自動捲動視窗至最新一行
+        """
+        self.log_text.SetInsertionPointEnd()
+        write_func()
+        self.log_text.ShowPosition(self.log_text.GetLastPosition())
+
     def log(self, message):
         """輸出標準日誌 (預設黑色)"""
-        timestamp = datetime.now().strftime("[%H:%M:%S.%f]")[:-3] + "]"
-        self.log_text.BeginTextColour(wx.BLACK)
-        if "\n" in message:
-            lines = message.split("\n")
-            formatted_message = f"{timestamp} {lines[0]}"
-            for line in lines[1:]:
-                formatted_message += f"\n{timestamp} {line}"
-            self.log_text.WriteText(formatted_message + "\n")
-        else:
-            self.log_text.WriteText(f"{timestamp} {message}\n")
-        self.log_text.EndTextColour()
 
-        # 自動捲動至最新行的最底部
-        self.log_text.ShowPosition(self.log_text.GetLastPosition())
+        def _do_write():
+            timestamp = datetime.now().strftime("[%H:%M:%S.%f]")[:-3] + "]"
+            self.log_text.BeginTextColour(wx.BLACK)
+            if "\n" in message:
+                lines = message.split("\n")
+                formatted_message = f"{timestamp} {lines[0]}"
+                for line in lines[1:]:
+                    formatted_message += f"\n{timestamp} {line}"
+                self.log_text.WriteText(formatted_message + "\n")
+            else:
+                self.log_text.WriteText(f"{timestamp} {message}\n")
+            self.log_text.EndTextColour()
+
+        self._write_log_entry(_do_write)
 
     def log_payload(self, prefix_title, raw_bytes, total_caps_len, direction="->"):
         """
-        將收發的 HEX 封包寫入 Log
+        將收發的 HEX 封包寫入 Log (支援高亮與單色模式)
         """
-        timestamp = datetime.now().strftime("[%H:%M:%S.%f]")[:-3] + "]"
 
-        # 確保第一行的格式與第二行的箭頭完全平行對齊
-        self.log_text.BeginTextColour(wx.BLACK)
-        self.log_text.WriteText(f"{timestamp} {prefix_title}\n")
-        self.log_text.WriteText(f"{timestamp} [{direction}] ")
+        def _do_write():
+            timestamp = datetime.now().strftime("[%H:%M:%S.%f]")[:-3] + "]"
 
-        # ------------------------------------------------------------------
-        # 情境 A：未啟用高亮 -> 直接輸出單色 HEX 字串
-        # ------------------------------------------------------------------
-        if not self.chk_enable_highlight.IsChecked():
-            hex_str = raw_bytes.hex(" ").upper()
-            self.log_text.WriteText(hex_str + "\n")
+            # 確保第一行的格式與第二行的箭頭完全平行對齊
             self.log_text.BeginTextColour(wx.BLACK)
-            self.log_text.ShowPosition(self.log_text.GetLastPosition())
-            return
+            self.log_text.WriteText(f"{timestamp} {prefix_title}\n")
+            self.log_text.WriteText(f"{timestamp} [{direction}] ")
 
-        # ------------------------------------------------------------------
-        # 情境 B：啟用高亮 -> 進行 Length Field (紅) 與 Payload (藍) 解析輸出
-        # ------------------------------------------------------------------
-        try:
-            len_offset = int(self.txt_len_offset.GetValue().strip())
-            len_length = int(self.txt_len_length.GetValue().strip())
-            payload_offset = int(self.txt_payload_offset.GetValue().strip())
-            is_big_endian = self.chk_big_endian.IsChecked()
-        except ValueError:
-            len_offset, len_length, payload_offset, is_big_endian = 1, 1, 3, False
-
-        # 解析長度欄位數值
-        payload_len = 0
-        if len(raw_bytes) >= (len_offset + len_length):
-            len_bytes = raw_bytes[len_offset : len_offset + len_length]
-            byte_order = "big" if is_big_endian else "little"
-            payload_len = int.from_bytes(len_bytes, byte_order)
-
-        len_start_idx = len_offset
-        len_end_idx = len_start_idx + len_length
-        payload_start_idx = payload_offset
-        payload_end_idx = payload_start_idx + payload_len
-
-        for i, b in enumerate(raw_bytes):
-            hex_str = f"{b:02X} "
-
-            # 顏色判斷：Length Field 為紅色，Payload 為藍色，其餘為黑色
-            if len_start_idx <= i < len_end_idx:
-                self.log_text.BeginTextColour(wx.RED)
-            elif payload_start_idx <= i < payload_end_idx:
-                self.log_text.BeginTextColour(wx.BLUE)
-            else:
+            # ------------------------------------------------------------------
+            # 情境 A：未啟用高亮 -> 直接輸出單色 HEX 字串
+            # ------------------------------------------------------------------
+            if not self.chk_enable_highlight.IsChecked():
+                hex_str = raw_bytes.hex(" ").upper()
+                self.log_text.WriteText(hex_str + "\n")
                 self.log_text.BeginTextColour(wx.BLACK)
+                return
 
-            self.log_text.WriteText(hex_str)
-            self.log_text.EndTextColour()
+            # ------------------------------------------------------------------
+            # 情境 B：啟用高亮 -> 進行 Length Field (紅) 與 Payload (藍) 解析輸出
+            # ------------------------------------------------------------------
+            try:
+                len_offset = int(self.txt_len_offset.GetValue().strip())
+                len_length = int(self.txt_len_length.GetValue().strip())
+                payload_offset = int(self.txt_payload_offset.GetValue().strip())
+                is_big_endian = self.chk_big_endian.IsChecked()
+            except ValueError:
+                len_offset, len_length, payload_offset, is_big_endian = 1, 1, 3, False
 
-        self.log_text.WriteText("\n")
+            # 解析長度欄位數值
+            payload_len = 0
+            if len(raw_bytes) >= (len_offset + len_length):
+                len_bytes = raw_bytes[len_offset : len_offset + len_length]
+                byte_order = "big" if is_big_endian else "little"
+                payload_len = int.from_bytes(len_bytes, byte_order)
 
-        # 自動捲動至最新行的最底部
-        self.log_text.ShowPosition(self.log_text.GetLastPosition())
+            len_start_idx = len_offset
+            len_end_idx = len_start_idx + len_length
+            payload_start_idx = payload_offset
+            payload_end_idx = payload_start_idx + payload_len
+
+            # 將相同顏色的 Byte 合併為同一區塊寫入，大幅減少 Style 節點產生的 Padding 累積
+            chunks = []
+            current_color = None
+            current_str = ""
+
+            total_bytes = len(raw_bytes)
+            for i, b in enumerate(raw_bytes):
+                # 關鍵修復：如果是最後一個 Byte，就不加尾巴的空格，省下 1~2 個字元寬度！
+                hex_str = f"{b:02X}" if i == total_bytes - 1 else f"{b:02X} "
+
+                if len_start_idx <= i < len_end_idx:
+                    color = wx.RED
+                elif payload_start_idx <= i < payload_end_idx:
+                    color = wx.BLUE
+                else:
+                    color = wx.BLACK
+
+                if color != current_color:
+                    if current_str:
+                        chunks.append((current_color, current_str))
+                    current_color = color
+                    current_str = hex_str
+                else:
+                    current_str += hex_str
+
+            if current_str:
+                chunks.append((current_color, current_str))
+
+            # 批次寫入顏色區塊
+            for color, text in chunks:
+                self.log_text.BeginTextColour(color)
+                self.log_text.WriteText(text)
+                self.log_text.EndTextColour()
+
+            self.log_text.WriteText("\n")
+
+        self._write_log_entry(_do_write)
 
     def clear_log(self):
         self.log_text.Clear()
@@ -1218,7 +1256,7 @@ class USBHIDFrame(wx.Frame):
                 assert isinstance(res, bytes)
                 recv_bytes = res
                 ret_report_id = recv_bytes[0] if len(recv_bytes) > 0 else 0x00
-                title = f"[RX] Get Report 成功 (請求 ID: 0x{report_id:02X}, 回應 ID: 0x{ret_report_id:02X}, 長度: {len(recv_bytes)}/{self.dev_caps_i_len} Bytes):"
+                title = f"[RX] Get Report 成功 (Request ID: 0x{report_id:02X}, Response ID: 0x{ret_report_id:02X}, 長度: {len(recv_bytes)}/{self.dev_caps_i_len} Bytes):"
                 self.log_payload(title, recv_bytes, self.dev_caps_i_len, direction="<-")
             else:
                 # 正確列出 Win32 API 傳回的具體 Error Message / Code
