@@ -5,6 +5,21 @@ title Building USB HID Tool EXE (Reusable VENV - Python 3.12)
 
 cd /d "%~dp0"
 
+:: 0. 判斷傳入參數決定要打包哪一個 Script
+set "TARGET_SCRIPT=usb_hid_tool_wx.py"
+set "TARGET_NAME=USB HID Tool"
+set "EXE_NAME=usb_hid_tool_wx.exe"
+
+if /i "%~1"=="payload" (
+    set "TARGET_SCRIPT=cmd_payload_checker.py"
+    set "TARGET_NAME=CMD Payload Length Checker"
+    set "EXE_NAME=cmd_payload_checker.exe"
+)
+
+echo ===================================================
+echo   Target Script: !TARGET_SCRIPT! (!TARGET_NAME!)
+echo ===================================================
+
 :: 1. 定義 Windows 系統中 Python 3.12 的實體安裝路徑
 set "USER_PYTHON=%LOCALAPPDATA%\Programs\Python\Python312\python.exe"
 
@@ -76,14 +91,14 @@ echo ===================================================
   --icon=usb_hid_tool.ico ^
   --add-data "usb_hid_tool.ico;." ^
   !EXCLUDES! ^
-  usb_hid_tool_wx.py
+  !TARGET_SCRIPT!
 
 echo.
 if %ERRORLEVEL% EQU 0 (
     echo ===================================================
     echo   Build Completed Successfully!
     
-    set "EXE_PATH=dist\usb_hid_tool_wx.exe"
+    set "EXE_PATH=dist\!EXE_NAME!"
     if exist "!EXE_PATH!" (
         for %%A in ("!EXE_PATH!") do set "FILE_SIZE_BYTES=%%~zA"
         
@@ -105,8 +120,8 @@ if %ERRORLEVEL% EQU 0 (
         )
         
         copy /y "!EXE_PATH!" "!TARGET_DIR!\" >nul
-        if !ERRORLEVEL! EQU 0 (
-            echo   SUCCESS: Copied to "!TARGET_DIR!\usb_hid_tool_wx.exe"
+        if !ERRORLEVEL% EQU 0 (
+            echo   SUCCESS: Copied to "!TARGET_DIR!\!EXE_NAME!"
         ) else (
             echo   ERROR: Failed to copy EXE file.
         )
