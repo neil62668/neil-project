@@ -149,6 +149,89 @@ def win32_get_input_report(device_path, request_bytes, expected_i_len):
 
 
 # ---------------------------------------------------------------------------
+# Airoha 黏包串流解析器 (精準規則：僅允許 0x5B 與 0x5B 後接的第一個 0x5D)
+# ---------------------------------------------------------------------------
+def parse_airoha_stuck_packets(raw_bytes: bytes, extract_valid_response_only=True):
+    """
+    根據 Airoha USB Data Format 與 RCMD 規格切分封包
+
+    規則：
+    1. 0x5B 必為正牌 Response
+    2. 只有「緊跟在 0x5B 後面」的第一個 0x5D 才視為合法 Payload
+    3. 在 0x5B 前面、或是 0x5B+0x5D 之後出現的 0x5D 皆為 Notification
+
+    :param extract_valid_response_only:
+        True  -> 只切出正確回應 (0x5B 以及緊跟在後的單一 0x5D)，給 Get Report 使用
+        False -> 只切出多餘通知 (0x5B 前面與第二個之後的 0x5D)，給 Clear 功能使用
+    """
+    sub_packets: list[bytes] = []
+    if len(raw_bytes) < 3:
+        return sub_packets
+
+    # 解析 USB Header
+    report_id = raw_bytes[0]
+    usb_len = raw_bytes[1]
+    target_dev = raw_bytes[2]  # 0x00 Local, 0x80 Remote
+
+    # 資料有效範圍：從 Byte 3 開始，長度最大為 usb_len
+    data_start = 3
+    data_end = min(3 + usb_len, len(raw_bytes))
+
+    cursor = data_start
+    found_5b = False
+    has_attached_5d = False
+
+    while cursor < data_end - 3:
+        if raw_bytes[cursor] == 0x05 and raw_bytes[cursor + 1] in (0x5B, 0x5D):
+            rcmd_start = cursor
+            type_byte = raw_bytes[cursor + 1]
+
+            # 讀取 2-byte Length 欄位 (代表 RCMD ID + Payload 的長度，Little-Endian)
+            if rcmd_start + 4 > data_end:
+                break
+            payload_and_id_len = int.from_bytes(raw_bytes[rcmd_start + 2 : rcmd_start + 4], byteorder="little")
+
+            # 該 RCMD 區塊總大小 = Channel(1) + Type(1) + Length欄位(2) + ID與Payload長度
+            rcmd_total_size = 4 + payload_and_id_len
+
+            if rcmd_start + rcmd_total_size <= data_end:
+                # 擷取完整的 RCMD 區塊
+                rcmd_block = raw_bytes[rcmd_start : rcmd_start + rcmd_total_size]
+
+                # 重新封裝成符合 Table 4-1 的標準 USB HID 封包格式以供高亮顯示
+                # USB Byte 1 (Length) 填入該 RCMD 區塊大小
+                full_sub_pkt = bytes([report_id, len(rcmd_block), target_dev]) + rcmd_block
+
+                is_valid = False
+
+                if type_byte == 0x5B:
+                    found_5b = True
+                    is_valid = True
+                elif type_byte == 0x5D:
+                    # 只有在已經看到 0x5B 且尚未接過 0x5D 時，這顆 0x5D 才算合法
+                    if found_5b and not has_attached_5d:
+                        is_valid = True
+                        has_attached_5d = True
+                    else:
+                        is_valid = False
+
+                # 依據調用目的過濾輸出
+                if extract_valid_response_only and is_valid:
+                    sub_packets.append(full_sub_pkt)
+                elif not extract_valid_response_only and not is_valid:
+                    sub_packets.append(full_sub_pkt)
+
+                cursor = rcmd_start + rcmd_total_size
+            else:
+                # 若剩餘位元組不足以構成完整的 RCMD，代表被邊界截斷，停止解析
+                break
+        else:
+            cursor += 1
+
+    return sub_packets
+
+
+# ---------------------------------------------------------------------------
 # 全時背景監測 Thread：採用 Callback + wx.CallAfter 實現跨執行緒解耦 (含 Debounce)
 # ---------------------------------------------------------------------------
 class USBGlobalMonitorThread(threading.Thread):
@@ -186,13 +269,13 @@ class USBGlobalMonitorThread(threading.Thread):
             current_paths = {d.get("path") for d in current_devs}
             now = time.time()
 
-            # 1. 偵測硬體變動並重置 Debounce 計時器
+            # 偵測硬體變動並重置 Debounce 計時器
             if current_paths != self.last_device_paths:
                 if self.pending_paths != current_paths:
                     self.pending_paths = current_paths
                     self.last_change_time = now
 
-            # 2. 只有在狀態持續穩定超過 debounce_time 後才正式觸發 Callback
+            # 只有在狀態持續穩定超過 debounce_time 後才正式觸發 Callback
             if self.pending_paths is not None:
                 if (now - self.last_change_time) >= self.debounce_time:
                     self.last_device_paths = self.pending_paths
@@ -355,9 +438,14 @@ class USBHIDFrame(wx.Frame):
         self.get_report_id_input = wx.TextCtrl(parent, value="07", size=wx.Size(30, -1))
         self.get_report_id_input.SetMaxLength(2)
 
+        self.chk_clear_airoha = wx.CheckBox(parent, label="清除 Airoha 系統類通知封包(Airoha IC 建議勾選)")
+        self.chk_clear_airoha.SetValue(True)
+
         convert_sizer.Add(self.chk_auto_convert, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 5)
         convert_sizer.Add(convert_label, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 2)
         convert_sizer.Add(self.get_report_id_input, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 5)
+        convert_sizer.AddSpacer(15)
+        convert_sizer.Add(self.chk_clear_airoha, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 5)
 
         sizer.Add(convert_sizer, 0, wx.EXPAND | wx.ALL, 2)
         return sizer
@@ -459,7 +547,7 @@ class USBHIDFrame(wx.Frame):
         return sizer
 
     # ---------------------------------------------------------------------------
-    # 按鈕與控制項事件處理控制點
+    # 按鈕與控制項事件處理
     # ---------------------------------------------------------------------------
     def on_btn_refresh(self, event):
         self.refresh_devices()
@@ -480,16 +568,16 @@ class USBHIDFrame(wx.Frame):
         self.stop_run_all()
 
     def on_btn_set_feature(self, event):
-        self.set_feature()
+        self.set_feature(clear_airoha=True)
 
     def on_btn_get_feature(self, event):
-        self.get_feature()
+        self.get_feature(clear_airoha=False)
 
     def on_btn_set_report(self, event):
-        self.set_report()
+        self.set_report(clear_airoha=True)
 
     def on_btn_get_report(self, event):
-        self.get_report()
+        self.get_report(clear_airoha=False)
 
     def on_btn_clear_log(self, event):
         self.clear_log()
@@ -639,7 +727,7 @@ class USBHIDFrame(wx.Frame):
 
             total_bytes = len(raw_bytes)
             for i, b in enumerate(raw_bytes):
-                # 關鍵修復：如果是最後一個 Byte，就不加尾巴的空格，省下 1~2 個字元寬度！
+                # 如果是最後一個 Byte，就不加尾巴的空格，省下 1~2 個字元寬度！
                 hex_str = f"{b:02X}" if i == total_bytes - 1 else f"{b:02X} "
 
                 if len_start_idx <= i < len_end_idx:
@@ -722,7 +810,6 @@ class USBHIDFrame(wx.Frame):
             self.run_one_btn.Enable(False)
             self.run_all_btn.Enable(False)
             self.stop_run_btn.Enable(False)
-
             self.set_feature_btn.Enable(False)
             self.get_feature_btn.Enable(False)
             self.set_report_btn.Enable(False)
@@ -736,6 +823,7 @@ class USBHIDFrame(wx.Frame):
             self.chk_auto_convert.SetValue(False)
             self.chk_auto_convert.Enable(False)
             self.get_report_id_input.Enable(False)
+            self.chk_clear_airoha.Enable(False)
             return
 
         has_f = self.dev_caps_f_len > 0
@@ -770,6 +858,9 @@ class USBHIDFrame(wx.Frame):
 
         self.get_report_id_input.Enable(can_convert and self.chk_auto_convert.IsChecked())
 
+        # 連線狀態下啟用 Airoha 清除 CheckBox
+        self.chk_clear_airoha.Enable(True)
+
         any_valid_caps = has_f or has_o or has_i
         self.run_one_btn.Enable(any_valid_caps)
         self.run_all_btn.Enable(any_valid_caps and has_commands)
@@ -801,7 +892,6 @@ class USBHIDFrame(wx.Frame):
                     if len(parts) == 2:
                         cmd_name = parts[0].lstrip("[").strip()
                         hex_str = parts[1].rstrip("]").strip()
-
                         self.cmd_list.append((cmd_name, hex_str))
 
                         display_name = f"#{count+1} {cmd_name}"
@@ -845,17 +935,79 @@ class USBHIDFrame(wx.Frame):
             time.sleep(0.005)
 
     def _get_selected_batch_actions(self):
-        """根據使用者勾選的 CheckBox 取得要執行的動作清單"""
+        """
+        根據使用者勾選的 CheckBox 取得要執行的動作清單：
+        關鍵邏輯：Set 類動作傳入 clear_airoha=True (發送前先幫管道淨空)；
+        Get 類動作傳入 clear_airoha=False (嚴禁在讀取回應前清理，避免吞掉回應！)。
+        """
         actions = []
         if self.chk_set_feature.IsChecked() and self.chk_set_feature.IsEnabled():
-            actions.append(("Set Feature", self.set_feature))
+            actions.append(("Set Feature", lambda: self.set_feature(clear_airoha=True)))
         if self.chk_get_feature.IsChecked() and self.chk_get_feature.IsEnabled():
-            actions.append(("Get Feature", self.get_feature))
+            actions.append(("Get Feature", lambda: self.get_feature(clear_airoha=False)))
         if self.chk_set_report.IsChecked() and self.chk_set_report.IsEnabled():
-            actions.append(("Set Report", self.set_report))
+            actions.append(("Set Report", lambda: self.set_report(clear_airoha=True)))
         if self.chk_get_report.IsChecked() and self.chk_get_report.IsEnabled():
-            actions.append(("Get Report", self.get_report))
+            actions.append(("Get Report", lambda: self.get_report(clear_airoha=False)))
         return actions
+
+    # ---------------------------------------------------------------------------
+    # Airoha 背景清道夫 (只清理非屬合法的通知類 0x5D)
+    # ---------------------------------------------------------------------------
+    def _clear_airoha_extra_packets_if_needed(self):
+        """
+        若勾選「清除 Airoha 系統類通知封包」，發送 0x07 索取。
+        利用 extract_valid_response_only=False 切出「不合法的 0x5D」並進行清理。
+        如果包含合法回應，清完穿插的廢包後停止清理。
+        """
+        if not self.chk_clear_airoha.IsChecked() or not self.connected_path or self.dev_caps_i_len <= 0:
+            return
+
+        try:
+            req = bytearray(self.dev_caps_i_len)
+            req[0] = 0x07
+
+            max_attempts = 30
+            attempt = 0
+            total_sub_cleared = 0
+
+            while attempt < max_attempts and self.connected_path:
+                attempt += 1
+                success, res = win32_get_input_report(self.connected_path, bytes(req), self.dev_caps_i_len)
+
+                if not success or not isinstance(res, bytes) or len(res) == 0:
+                    break
+
+                # 若整包扣除 Report ID 後全為 0，代表緩衝區已淨空
+                if len(res) > 1 and all(b == 0 for b in res[1:]):
+                    break
+
+                # 提取無效的多餘通知封包 (0x5B 前面的 0x5D，以及 0x5B+0x5D 之後的多餘 0x5D)
+                invalid_sub_packets = parse_airoha_stuck_packets(res, extract_valid_response_only=False)
+
+                if not invalid_sub_packets:
+                    # 如果已經沒有任何不合法的通知封包，停止清理
+                    break
+
+                for sub_pkt in invalid_sub_packets:
+                    total_sub_cleared += 1
+                    self.log_payload(
+                        f"[Airoha Clear] 自動清除 Airoha 系統類通知封包 #{total_sub_cleared}:",
+                        sub_pkt,
+                        len(sub_pkt),
+                        direction="<-",
+                    )
+
+                # 檢查當前包內是否含有 0x5B；若有，說明剩下的資料包含有效回應，清除無效 0x5D 後立刻退出！
+                has_response = any(res[i] == 0x05 and res[i + 1] == 0x5B for i in range(len(res) - 1))
+                if has_response:
+                    break
+
+                wx.Yield()
+                time.sleep(0.01)
+
+        except Exception as e:
+            self.log(f"[警告] 清除 Airoha 額外封包過程發生例外: {str(e)}")
 
     def run_one(self):
         if not self.dev:
@@ -887,6 +1039,8 @@ class USBHIDFrame(wx.Frame):
 
         try:
             self.log("==========================================")
+            self._clear_airoha_extra_packets_if_needed()
+
             self.log(f"[Run One] 開始執行單組命令 (包含 {len(actions)} 個勾選項，delay={delay_ms:.0f}ms)...")
             self.log("==========================================")
 
@@ -927,6 +1081,9 @@ class USBHIDFrame(wx.Frame):
 
         self.stop_requested = False
         self.log("==========================================")
+        # 整個 Run All 開始前統一清除一次
+        self._clear_airoha_extra_packets_if_needed()
+
         self.log(f"[Run All] 開始執行批次測試，共 {len(self.cmd_list)} 項命令 (間隔 delay={delay_ms:.0f}ms)...")
         self.log("==========================================")
 
@@ -1149,11 +1306,14 @@ class USBHIDFrame(wx.Frame):
         padded_bytes = bytes(parsed_bytes).ljust(target_len, b"\x00")
         return padded_bytes
 
-    def set_feature(self):
+    def set_feature(self, clear_airoha=True):
         if not self.dev:
             return
 
         try:
+            if clear_airoha:
+                self._clear_airoha_extra_packets_if_needed()
+
             payload = self._prepare_payload(self.dev_caps_f_len)
             report_id = payload[0]
 
@@ -1171,11 +1331,14 @@ class USBHIDFrame(wx.Frame):
             else:
                 wx.MessageBox(str(e), "長度驗證失敗", wx.OK | wx.ICON_WARNING, self)
 
-    def get_feature(self):
+    def get_feature(self, clear_airoha=False):
         if not self.dev:
             return
 
         try:
+            if clear_airoha:
+                self._clear_airoha_extra_packets_if_needed()
+
             payload = self._prepare_payload(self.dev_caps_f_len)
             report_id = payload[0]
 
@@ -1196,11 +1359,14 @@ class USBHIDFrame(wx.Frame):
             else:
                 wx.MessageBox(str(e), "長度驗證失敗", wx.OK | wx.ICON_WARNING, self)
 
-    def set_report(self):
+    def set_report(self, clear_airoha=True):
         if not self.dev:
             return
 
         try:
+            if clear_airoha:
+                self._clear_airoha_extra_packets_if_needed()
+
             payload = self._prepare_payload(self.dev_caps_o_len)
             report_id = payload[0]
 
@@ -1218,11 +1384,14 @@ class USBHIDFrame(wx.Frame):
             else:
                 wx.MessageBox(str(e), "長度驗證失敗", wx.OK | wx.ICON_WARNING, self)
 
-    def get_report(self):
+    def get_report(self, clear_airoha=False):
         if not self.connected_path:
             return
 
         try:
+            if clear_airoha:
+                self._clear_airoha_extra_packets_if_needed()
+
             target_report_id = None
 
             if self.chk_auto_convert.IsChecked() and self.chk_auto_convert.IsEnabled():
@@ -1256,8 +1425,22 @@ class USBHIDFrame(wx.Frame):
                 assert isinstance(res, bytes)
                 recv_bytes = res
                 ret_report_id = recv_bytes[0] if len(recv_bytes) > 0 else 0x00
-                title = f"[RX] Get Report 成功 (Request ID: 0x{report_id:02X}, Response ID: 0x{ret_report_id:02X}, 長度: {len(recv_bytes)}/{self.dev_caps_i_len} Bytes):"
-                self.log_payload(title, recv_bytes, self.dev_caps_i_len, direction="<-")
+
+                # 只有勾選清除 Airoha 時才切開顯示，且只擷取 0x5B 與 0x5B 後接的第一個 0x5D
+                if self.chk_clear_airoha.IsChecked():
+                    valid_sub_packets = parse_airoha_stuck_packets(recv_bytes, extract_valid_response_only=True)
+                    if valid_sub_packets:
+                        for idx, sub_pkt in enumerate(valid_sub_packets, 1):
+                            sub_type = sub_pkt[4] if len(sub_pkt) > 4 else 0x00
+                            title = f"[RX] Get Report 回應 RACE 封包(已剖析) #{idx} (RACE Type: 0x{sub_type:02X}, 長度: {len(sub_pkt)} Bytes):"
+                            self.log_payload(title, sub_pkt, len(sub_pkt), direction="<-")
+                    else:
+                        title = f"[RX] Get Report 成功 (Request ID: 0x{report_id:02X}, Response ID: 0x{ret_report_id:02X}, 長度: {len(recv_bytes)}/{self.dev_caps_i_len} Bytes):"
+                        self.log_payload(title, recv_bytes, self.dev_caps_i_len, direction="<-")
+                else:
+                    title = f"[RX] Get Report 成功 (Request ID: 0x{report_id:02X}, Response ID: 0x{ret_report_id:02X}, 長度: {len(recv_bytes)}/{self.dev_caps_i_len} Bytes):"
+                    self.log_payload(title, recv_bytes, self.dev_caps_i_len, direction="<-")
+
             else:
                 # 正確列出 Win32 API 傳回的具體 Error Message / Code
                 self.log(f"[錯誤] Get Report 失敗: {res}")
@@ -1286,7 +1469,7 @@ class USBHIDFrame(wx.Frame):
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
     try:
-        myappid = "neilxia.usbhidtool.wx.1.0"
+        myappid = "neilxia.usbhidtool.wx.1.1"
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)
     except Exception:
         pass

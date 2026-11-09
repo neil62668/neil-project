@@ -118,9 +118,9 @@ if %ERRORLEVEL% EQU 0 (
             echo   Target directory does not exist. Creating: !TARGET_DIR!
             mkdir "!TARGET_DIR!"
         )
-        
+
         copy /y "!EXE_PATH!" "!TARGET_DIR!\" >nul
-        if !ERRORLEVEL% EQU 0 (
+        if !ERRORLEVEL! EQU 0 (
             echo   SUCCESS: Copied to "!TARGET_DIR!\!EXE_NAME!"
         ) else (
             echo   ERROR: Failed to copy EXE file.
