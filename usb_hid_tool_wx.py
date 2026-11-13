@@ -283,9 +283,10 @@ class USBGlobalMonitorThread(threading.Thread):
                     if self.on_usb_changed_cb:
                         wx.CallAfter(self.on_usb_changed_cb)  # type: ignore[reportCallIssue]
 
-            # 若當前有連線中的目標裝置，專門檢查該裝置是否仍然存在
+            # 若當前有連線中的目標裝置，專門檢查該裝置路徑是否因晶片重置失效或消失
             if self.target_path:
-                if self.target_path not in current_paths:
+                path_still_exists = self.target_path in current_paths
+                if not path_still_exists:
                     if self.on_target_disconnected_cb:
                         wx.CallAfter(self.on_target_disconnected_cb)  # type: ignore[reportCallIssue]
                     self.target_path = None  # 避免重複觸發
@@ -640,8 +641,10 @@ class USBHIDFrame(wx.Frame):
         self.input_label.SetLabel("HEX 資料輸入 (未滿長度自動補 0x00，超過則阻擋)")
         self.update_ui_state()
 
-        self.log("[系統] 警告: 當前連線的 USB 裝置已被拔除，已自動中斷連線！")
-        wx.MessageBox("偵測到 USB 裝置已被拔除，系統已自動斷開連線！", "裝置拔除提示", wx.OK | wx.ICON_WARNING, self)
+        self.log("[系統] 警告: 當前連線的 USB 裝置已被拔除或內部重置，已自動中斷連線！")
+        wx.MessageBox(
+            "偵測到 USB 裝置已被拔除或重置，系統已自動斷開連線！", "裝置狀態提示", wx.OK | wx.ICON_WARNING, self
+        )
 
     # ---------------------------------------------------------------------------
     # 日誌寫入封裝 (核心底層與上層 API)
@@ -1480,7 +1483,7 @@ class USBHIDFrame(wx.Frame):
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
     try:
-        myappid = "neilxia.usbhidtool.wx.1.2"
+        myappid = "neilxia.usbhidtool.wx.1.2.1"
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)
     except Exception:
         pass
