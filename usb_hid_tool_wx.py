@@ -151,7 +151,7 @@ def win32_get_input_report(device_path, request_bytes, expected_i_len):
 # ---------------------------------------------------------------------------
 # Airoha 黏包串流解析器 (精準規則：僅允許 0x5B 與 0x5B 後接的第一個 0x5D)
 # ---------------------------------------------------------------------------
-def parse_airoha_stuck_packets(raw_bytes: bytes, extract_valid_response_only=True):
+def parse_airoha_stuck_packets(raw_bytes: bytes, extract_valid_response_only: bool = True) -> list[bytes]:
     """
     根據 Airoha USB Data Format 與 RCMD 規格切分封包
 
@@ -1007,7 +1007,7 @@ class USBHIDFrame(wx.Frame):
                 time.sleep(0.01)
 
         except Exception as e:
-            self.log(f"[警告] 清除 Airoha 額外封包過程發生例外: {str(e)}")
+            self.log(f"[警告] 清除 Airoha 系統類通知封包過程發生例外: {str(e)}")
 
     def run_one(self):
         if not self.dev:
@@ -1426,8 +1426,19 @@ class USBHIDFrame(wx.Frame):
                 recv_bytes = res
                 ret_report_id = recv_bytes[0] if len(recv_bytes) > 0 else 0x00
 
-                # 只有勾選清除 Airoha 時才切開顯示，且只擷取 0x5B 與 0x5B 後接的第一個 0x5D
+                # 檢查收到的原始資料中是否包含 0x5B (正牌 Response)
+                has_5b_response = any(
+                    recv_bytes[i] == 0x05 and recv_bytes[i + 1] == 0x5B for i in range(len(recv_bytes) - 1)
+                )
+
+                # 只有勾選清除 Airoha 系統類通知封包時才進行切開與狀態判斷
                 if self.chk_clear_airoha.IsChecked():
+                    # 如果整包完全沒有 0x5B，且包含 0x5D 通知，代表這是一次「斷線/無回應」的錯誤狀態
+                    if not has_5b_response and any(
+                        recv_bytes[i] == 0x05 and recv_bytes[i + 1] == 0x5D for i in range(len(recv_bytes) - 1)
+                    ):
+                        self.log("[警告] 未收到代表正確回應的 0x5B 封包！請檢查目標裝置是否已進入睡眠或斷線。")
+
                     valid_sub_packets = parse_airoha_stuck_packets(recv_bytes, extract_valid_response_only=True)
                     if valid_sub_packets:
                         for idx, sub_pkt in enumerate(valid_sub_packets, 1):
@@ -1469,7 +1480,7 @@ class USBHIDFrame(wx.Frame):
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
     try:
-        myappid = "neilxia.usbhidtool.wx.1.1"
+        myappid = "neilxia.usbhidtool.wx.1.2"
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)
     except Exception:
         pass
