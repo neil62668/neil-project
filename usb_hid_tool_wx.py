@@ -611,12 +611,8 @@ class USBHIDFrame(wx.Frame):
         self.get_report_id_input.Enable(is_chk)
 
     def on_highlight_toggled(self, event):
-        """根據「啟用封包資料高亮設定」勾選狀態連動控制相關 GUI 輸入元件"""
-        is_enabled = self.chk_enable_highlight.IsChecked()
-        self.txt_len_offset.Enable(is_enabled)
-        self.txt_len_length.Enable(is_enabled)
-        self.chk_big_endian.Enable(is_enabled)
-        self.txt_payload_offset.Enable(is_enabled)
+        """封包資料結構參數 (偏移/大小/Big-Endian) 維持獨立可調，不與高亮開關強制連動"""
+        event.Skip()
 
     # ---------------------------------------------------------------------------
     # 全時背景監控管理 (CallAfter 核心)
