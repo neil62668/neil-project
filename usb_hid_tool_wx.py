@@ -231,6 +231,21 @@ def parse_airoha_stuck_packets(raw_bytes: bytes, extract_valid_response_only: bo
     return sub_packets
 
 
+def decode_payload_to_text(payload_bytes: bytes, placeholder: str = "·") -> str:
+    """
+    將資料欄位 Bytes 轉換為可讀文字：
+    僅保留 ASCII 0x20 ~ 0x7E (32 ~ 126) 的可顯示字元；
+    其餘數值以 placeholder (預設中點 '·') 標示。
+    """
+    chars: list[str] = []
+    for b in payload_bytes:
+        if 0x20 <= b <= 0x7E:
+            chars.append(chr(b))
+        else:
+            chars.append(placeholder)
+    return "".join(chars)
+
+
 # ---------------------------------------------------------------------------
 # 全時背景監測 Thread：採用 Callback + wx.CallAfter 實現跨執行緒解耦 (含 Debounce)
 # ---------------------------------------------------------------------------
@@ -300,8 +315,7 @@ class USBGlobalMonitorThread(threading.Thread):
 # ---------------------------------------------------------------------------
 class USBHIDFrame(wx.Frame):
     def __init__(self):
-        super().__init__(None, title="USB HID Tool", size=wx.Size(800, 680))
-        self.SetMinSize(wx.Size(640, 540))
+        super().__init__(None, title="USB HID Tool", size=wx.Size(840, 680))
 
         self.dev = None
         self.connected_path = None
@@ -476,7 +490,7 @@ class USBHIDFrame(wx.Frame):
         """5. 通訊日誌顯示與匯出控制區塊"""
         sizer = wx.BoxSizer(wx.VERTICAL)
 
-        # 第一排：兩個 CheckBox 開關
+        # 第一排：三個 CheckBox 開關
         r1_sizer = wx.BoxSizer(wx.HORIZONTAL)
 
         self.chk_enable_highlight = wx.CheckBox(parent, label="啟用封包資料高亮設定")
@@ -486,9 +500,14 @@ class USBHIDFrame(wx.Frame):
         self.chk_big_endian = wx.CheckBox(parent, label="長度欄位數值為 Big-Endian 排列")
         self.chk_big_endian.SetValue(False)  # 預設 Little-Endian
 
+        self.chk_decode_ascii = wx.CheckBox(parent, label="轉換資料欄位數值為文字(非 ASCII 可列印字元以中點 · 替代)")
+        self.chk_decode_ascii.SetValue(False)  # 預設關閉
+
         r1_sizer.Add(self.chk_enable_highlight, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 5)
         r1_sizer.AddSpacer(15)
         r1_sizer.Add(self.chk_big_endian, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 5)
+        r1_sizer.AddSpacer(15)
+        r1_sizer.Add(self.chk_decode_ascii, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 5)
 
         # 第二排：偏移量與長度的參數輸入框
         r2_sizer = wx.BoxSizer(wx.HORIZONTAL)
@@ -538,7 +557,7 @@ class USBHIDFrame(wx.Frame):
         self.log_text = rt.RichTextCtrl(parent, style=wx.TE_MULTILINE | wx.TE_READONLY | wx.HSCROLL)
 
         font = wx.Font(10, wx.FONTFAMILY_TELETYPE, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL)
-        font.SetFaceName("Consolas")
+        font.SetFaceName("Consolas")  # 設定字型為等寬字型
         self.log_text.SetFont(font)
 
         # 直接對 RichTextCtrl 設定 Margins
@@ -680,7 +699,7 @@ class USBHIDFrame(wx.Frame):
 
     def log_payload(self, prefix_title, raw_bytes, total_caps_len, direction="->"):
         """
-        將收發的 HEX 封包寫入 Log (支援高亮與單色模式)
+        將收發的 HEX 封包寫入 Log (支援高亮、單色模式與資料欄位轉文字)
         """
 
         def _do_write():
@@ -691,18 +710,6 @@ class USBHIDFrame(wx.Frame):
             self.log_text.WriteText(f"{timestamp} {prefix_title}\n")
             self.log_text.WriteText(f"{timestamp} [{direction}] ")
 
-            # ------------------------------------------------------------------
-            # 情境 A：未啟用高亮 -> 直接輸出單色 HEX 字串
-            # ------------------------------------------------------------------
-            if not self.chk_enable_highlight.IsChecked():
-                hex_str = raw_bytes.hex(" ").upper()
-                self.log_text.WriteText(hex_str + "\n")
-                self.log_text.BeginTextColour(wx.BLACK)
-                return
-
-            # ------------------------------------------------------------------
-            # 情境 B：啟用高亮 -> 進行 Length Field (紅) 與 Payload (藍) 解析輸出
-            # ------------------------------------------------------------------
             try:
                 len_offset = int(self.txt_len_offset.GetValue().strip())
                 len_length = int(self.txt_len_length.GetValue().strip())
@@ -713,7 +720,7 @@ class USBHIDFrame(wx.Frame):
 
             # 解析長度欄位數值
             payload_len = 0
-            if len(raw_bytes) >= (len_offset + len_length):
+            if len_length > 0 and len(raw_bytes) >= (len_offset + len_length) and len_offset >= 0:
                 len_bytes = raw_bytes[len_offset : len_offset + len_length]
                 byte_order = "big" if is_big_endian else "little"
                 payload_len = int.from_bytes(len_bytes, byte_order)
@@ -723,41 +730,62 @@ class USBHIDFrame(wx.Frame):
             payload_start_idx = payload_offset
             payload_end_idx = payload_start_idx + payload_len
 
-            # 將相同顏色的 Byte 合併為同一區塊寫入，大幅減少 Style 節點產生的 Padding 累積
-            chunks = []
-            current_color = None
-            current_str = ""
+            # ------------------------------------------------------------------
+            # 情境 A：未啟用高亮 -> 直接輸出單色 HEX 字串
+            # ------------------------------------------------------------------
+            if not self.chk_enable_highlight.IsChecked():
+                hex_str = raw_bytes.hex(" ").upper()
+                self.log_text.WriteText(hex_str + "\n")
+            else:
+                # --------------------------------------------------------------
+                # 情境 B：啟用高亮 -> 進行 Length Field (紅) 與 Payload (藍) 解析輸出
+                # --------------------------------------------------------------
+                chunks = []
+                current_color = None
+                current_str = ""
 
-            total_bytes = len(raw_bytes)
-            for i, b in enumerate(raw_bytes):
-                # 如果是最後一個 Byte，就不加尾巴的空格，省下 1~2 個字元寬度！
-                hex_str = f"{b:02X}" if i == total_bytes - 1 else f"{b:02X} "
+                total_bytes = len(raw_bytes)
+                for i, b in enumerate(raw_bytes):
+                    # 如果是最後一個 Byte，就不加尾巴的空格，省下 1~2 個字元寬度！
+                    hex_str = f"{b:02X}" if i == total_bytes - 1 else f"{b:02X} "
 
-                if len_start_idx <= i < len_end_idx:
-                    color = wx.RED
-                elif payload_start_idx <= i < payload_end_idx:
-                    color = wx.BLUE
-                else:
-                    color = wx.BLACK
+                    if len_start_idx <= i < len_end_idx:
+                        color = wx.RED
+                    elif payload_start_idx <= i < payload_end_idx:
+                        color = wx.BLUE
+                    else:
+                        color = wx.BLACK
 
-                if color != current_color:
-                    if current_str:
-                        chunks.append((current_color, current_str))
-                    current_color = color
-                    current_str = hex_str
-                else:
-                    current_str += hex_str
+                    if color != current_color:
+                        if current_str:
+                            chunks.append((current_color, current_str))
+                        current_color = color
+                        current_str = hex_str
+                    else:
+                        current_str += hex_str
 
-            if current_str:
-                chunks.append((current_color, current_str))
+                if current_str:
+                    chunks.append((current_color, current_str))
 
-            # 批次寫入顏色區塊
-            for color, text in chunks:
-                self.log_text.BeginTextColour(color)
-                self.log_text.WriteText(text)
+                # 批次寫入顏色區塊
+                for color, text in chunks:
+                    self.log_text.BeginTextColour(color)
+                    self.log_text.WriteText(text)
+                    self.log_text.EndTextColour()
+
+                self.log_text.WriteText("\n")
+
+            # ------------------------------------------------------------------
+            # 情境 C：若勾選「轉換資料欄位數值為文字」-> 輸出解析後文字
+            # ------------------------------------------------------------------
+            if self.chk_decode_ascii.IsChecked() and payload_len > 0 and payload_start_idx >= 0:
+                payload_slice = raw_bytes[payload_start_idx : min(payload_end_idx, len(raw_bytes))]
+                decoded_text = decode_payload_to_text(payload_slice)
+                self.log_text.BeginTextColour(wx.BLUE)
+                self.log_text.WriteText(f"{timestamp} [ASCII] {decoded_text}\n")
                 self.log_text.EndTextColour()
 
-            self.log_text.WriteText("\n")
+            self.log_text.BeginTextColour(wx.BLACK)
 
         self._write_log_entry(_do_write)
 
@@ -1322,7 +1350,7 @@ class USBHIDFrame(wx.Frame):
 
             bytes_written = self.dev.send_feature_report(payload)
             if bytes_written > 0:
-                title = f"[TX] Set Feature 成功 (Report ID: 0x{report_id:02X}, 長度: {bytes_written}/{self.dev_caps_f_len} Bytes):"
+                title = f"[TX] Set Feature 傳送成功 (Report ID: 0x{report_id:02X}, 長度: {bytes_written}/{self.dev_caps_f_len} Bytes):"
                 self.log_payload(title, payload, self.dev_caps_f_len, direction="->")
             else:
                 self.log("[錯誤] Set Feature 傳送失敗。")
@@ -1375,7 +1403,7 @@ class USBHIDFrame(wx.Frame):
 
             bytes_written = self.dev.write(payload)
             if bytes_written > 0:
-                title = f"[TX] Set Report 成功 (Report ID: 0x{report_id:02X}, 長度: {bytes_written}/{self.dev_caps_o_len} Bytes):"
+                title = f"[TX] Set Report 傳送成功 (Report ID: 0x{report_id:02X}, 長度: {bytes_written}/{self.dev_caps_o_len} Bytes):"
                 self.log_payload(title, payload, self.dev_caps_o_len, direction="->")
             else:
                 self.log("[錯誤] Set Report 傳送失敗。")
@@ -1449,10 +1477,10 @@ class USBHIDFrame(wx.Frame):
                             title = f"[RX] Get Report 回應 RACE 封包(已剖析) #{idx} (RACE Type: 0x{sub_type:02X}, 長度: {len(sub_pkt)} Bytes):"
                             self.log_payload(title, sub_pkt, len(sub_pkt), direction="<-")
                     else:
-                        title = f"[RX] Get Report 成功 (Request ID: 0x{report_id:02X}, Response ID: 0x{ret_report_id:02X}, 長度: {len(recv_bytes)}/{self.dev_caps_i_len} Bytes):"
+                        title = f"[RX] Get Report 接收成功 (Request ID: 0x{report_id:02X}, Response ID: 0x{ret_report_id:02X}, 長度: {len(recv_bytes)}/{self.dev_caps_i_len} Bytes):"
                         self.log_payload(title, recv_bytes, self.dev_caps_i_len, direction="<-")
                 else:
-                    title = f"[RX] Get Report 成功 (Request ID: 0x{report_id:02X}, Response ID: 0x{ret_report_id:02X}, 長度: {len(recv_bytes)}/{self.dev_caps_i_len} Bytes):"
+                    title = f"[RX] Get Report 接收成功 (Request ID: 0x{report_id:02X}, Response ID: 0x{ret_report_id:02X}, 長度: {len(recv_bytes)}/{self.dev_caps_i_len} Bytes):"
                     self.log_payload(title, recv_bytes, self.dev_caps_i_len, direction="<-")
 
             else:
@@ -1483,7 +1511,7 @@ class USBHIDFrame(wx.Frame):
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
     try:
-        myappid = "neilxia.usbhidtool.wx.1.2.1"
+        myappid = "neilxia.usbhidtool.wx.1.2.2"
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)
     except Exception:
         pass
