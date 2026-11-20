@@ -1,11 +1,13 @@
 import sys
 import os
+import re
 import time
 import threading
 import ctypes
 import ctypes.wintypes as wt
 from datetime import datetime
 from pathlib import Path
+from typing import Literal
 import hid
 import wx
 import wx._adv
@@ -718,7 +720,7 @@ class USBHIDFrame(wx.Frame):
             payload_len = 0
             if len_length > 0 and len(raw_bytes) >= (len_offset + len_length) and len_offset >= 0:
                 len_bytes = raw_bytes[len_offset : len_offset + len_length]
-                byte_order = "big" if is_big_endian else "little"
+                byte_order: Literal["big", "little"] = "big" if is_big_endian else "little"
                 payload_len = int.from_bytes(len_bytes, byte_order)
 
             len_start_idx = len_offset
@@ -736,8 +738,8 @@ class USBHIDFrame(wx.Frame):
                 # --------------------------------------------------------------
                 # 情境 B：啟用高亮 -> 進行 Length Field (紅) 與 Payload (藍) 解析輸出
                 # --------------------------------------------------------------
-                chunks = []
-                current_color = None
+                chunks: list[tuple[wx.Colour, str]] = []
+                current_color: wx.Colour = wx.BLACK
                 current_str = ""
 
                 total_bytes = len(raw_bytes)
@@ -765,9 +767,10 @@ class USBHIDFrame(wx.Frame):
 
                 # 批次寫入顏色區塊
                 for color, text in chunks:
-                    self.log_text.BeginTextColour(color)
-                    self.log_text.WriteText(text)
-                    self.log_text.EndTextColour()
+                    if color is not None:
+                        self.log_text.BeginTextColour(color)
+                        self.log_text.WriteText(text)
+                        self.log_text.EndTextColour()
 
                 self.log_text.WriteText("\n")
 
@@ -892,6 +895,57 @@ class USBHIDFrame(wx.Frame):
         self.run_one_btn.Enable(any_valid_caps)
         self.run_all_btn.Enable(any_valid_caps and has_commands)
 
+    @staticmethod
+    def _parse_and_validate_cmd_line(line: str) -> tuple[bool, str, tuple[str, str] | None]:
+        """
+        驗證單行命令格式是否符合 [Name],[Command]：
+        - 整行須以 '[' 開頭、']' 結尾，且僅含一組 '],[' 分隔
+        - Name：不可為空白，且須為 ASCII 可列印字元 (0x20 ~ 0x7E)
+        - Command：不可為空白，僅允許 HEX (0-9, A-F, a-f) 與空白字元，且移除空白後字元數為偶數
+        """
+        if not (line.startswith("[") and line.endswith("]")):
+            return False, "整行必須以 '[' 開頭並以 ']' 結尾（檢查括號或同一行是否有多組命令）", None
+
+        inner = line[1:-1]
+        if "],[" not in inner:
+            return False, "缺少合法的 '],[' 分隔符", None
+
+        parts = inner.split("],[")
+        if len(parts) != 2:
+            return False, f"偵測到 {len(parts) - 1} 組 '],[' 分隔符（每行僅允許一組 [Name],[Command]）", None
+
+        cmd_name = parts[0].strip()
+        cmd_hex_raw = parts[1].strip()
+
+        if not cmd_name:
+            return False, "Name 不可為空白", None
+
+        if not all(0x20 <= ord(ch) <= 0x7E for ch in cmd_name):
+            invalid_name_chars = sorted({ch for ch in cmd_name if not (0x20 <= ord(ch) <= 0x7E)})
+            return False, f"Name 包含非 ASCII 可列印字元: {invalid_name_chars}", None
+
+        if not cmd_hex_raw:
+            return False, "Command 不可為空白", None
+
+        # Command 只能包含 HEX 字元與空白字元
+        if not re.fullmatch(r"[0-9A-Fa-f\s]+", cmd_hex_raw):
+            invalid_cmd_chars = sorted({ch for ch in cmd_hex_raw if not re.fullmatch(r"[0-9A-Fa-f\s]", ch)})
+            return (
+                False,
+                f"Command 只能包含 HEX 與空白字元，發現非法字元: {', '.join(repr(c) for c in invalid_cmd_chars)}",
+                None,
+            )
+
+        compact_hex = re.sub(r"\s+", "", cmd_hex_raw)
+        if not compact_hex:
+            return False, "Command 不可全為空白", None
+
+        if len(compact_hex) % 2 != 0:
+            return False, f"Command HEX 字元數 ({len(compact_hex)}) 為奇數，無法組成完整 Bytes", None
+
+        formatted_hex = " ".join(compact_hex[i : i + 2].upper() for i in range(0, len(compact_hex), 2))
+        return True, "", (cmd_name, formatted_hex)
+
     def load_cmd_file(self):
         with wx.FileDialog(
             self,
@@ -908,34 +962,60 @@ class USBHIDFrame(wx.Frame):
             self.cmd_combo.Clear()
             self.cmd_combo.Append("-- 請選擇命令 --")
 
-            count = 0
+            valid_count = 0
+            error_entries: list[tuple[int, str, str]] = []
+
             with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
-                for line in f:
-                    line = line.strip()
-                    if not line or not line.startswith("["):
+                for line_no, raw_line in enumerate(f, 1):
+                    line = raw_line.strip()
+                    if not line:
                         continue
 
-                    parts = line.split("],[" if "],[" in line else "],[")
-                    if len(parts) == 2:
-                        cmd_name = parts[0].lstrip("[").strip()
-                        hex_str = parts[1].rstrip("]").strip()
-                        self.cmd_list.append((cmd_name, hex_str))
-
-                        display_name = f"#{count+1} {cmd_name}"
-                        self.cmd_combo.Append(display_name)
-                        count += 1
+                    is_valid, reason, parsed = self._parse_and_validate_cmd_line(line)
+                    if is_valid and parsed is not None:
+                        cmd_name, formatted_hex = parsed
+                        self.cmd_list.append((cmd_name, formatted_hex))
+                        self.cmd_combo.Append(f"#{valid_count + 1} {cmd_name}")
+                        valid_count += 1
+                    else:
+                        error_entries.append((line_no, reason, line))
 
             self.cmd_combo.SetSelection(0)
-            self.log(f"[命令載入] 成功載入 {count} 個命令。")
+            self.log(
+                f"[命令載入] 完成解析「{Path(file_path).name}」：合法命令 {valid_count} 筆，錯誤行數 {len(error_entries)} 行。"
+            )
 
-            # 防呆邏輯：當成功解析到至少一條命令時才啟用 ComboBox，否則保持禁用
-            if count > 0:
+            for line_no, reason, raw_preview in error_entries:
+                preview = raw_preview if len(raw_preview) <= 120 else raw_preview[:117] + "..."
+                self.log(f"[命令格式錯誤] 第 {line_no} 行：{reason}")
+
+            if valid_count > 0:
                 self.cmd_combo.Enable(True)
             else:
                 self.cmd_combo.Enable(False)
-                wx.MessageBox("檔案內未解析到符合 [Name],[HEX] 格式的命令！", "警告", wx.OK | wx.ICON_WARNING, self)
 
             self.update_ui_state(preserve_checkboxes=True)
+
+            if error_entries:
+                summary_lines = [f"第 {line_no} 行：{reason}" for line_no, reason, _ in error_entries[:10]]
+                if len(error_entries) > 10:
+                    summary_lines.append(f"... 其餘 {len(error_entries) - 10} 筆錯誤詳情請見輸出日誌。")
+                dialog_title = "命令載入完成 (含格式錯誤)" if valid_count > 0 else "命令載入失敗"
+                dialog_icon = wx.ICON_WARNING if valid_count > 0 else wx.ICON_ERROR
+                wx.MessageBox(
+                    f"共發現 {len(error_entries)} 行格式錯誤（已載入 {valid_count} 筆合法命令）：\n\n"
+                    + "\n".join(summary_lines),
+                    dialog_title,
+                    wx.OK | dialog_icon,
+                    self,
+                )
+            elif valid_count == 0:
+                wx.MessageBox(
+                    "檔案為空或僅包含空白行，未解析到任何符合 [Name],[Command] 格式的命令！",
+                    "警告",
+                    wx.OK | wx.ICON_WARNING,
+                    self,
+                )
 
         except Exception as e:
             self.cmd_combo.Enable(False)
@@ -994,7 +1074,7 @@ class USBHIDFrame(wx.Frame):
             req = bytearray(self.dev_caps_i_len)
             req[0] = 0x07
 
-            max_attempts = 30
+            max_attempts = 100
             attempt = 0
             total_sub_cleared = 0
 
@@ -1507,7 +1587,7 @@ class USBHIDFrame(wx.Frame):
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
     try:
-        myappid = "neilxia.usbhidtool.wx.1.2.2"
+        myappid = "neilxia.usbhidtool.wx.1.2.3"
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)
     except Exception:
         pass
