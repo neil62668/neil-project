@@ -957,10 +957,12 @@ class USBHIDFrame(wx.Frame):
                 return
             file_path = file_dialog.GetPath()
 
+        cmd_filename = Path(file_path).name
+
         try:
             self.cmd_list.clear()
             self.cmd_combo.Clear()
-            self.cmd_combo.Append("-- 請選擇命令 --")
+            self.cmd_combo.Append(f"-- 請選擇命令 -- <{cmd_filename}>")
 
             valid_count = 0
             error_entries: list[tuple[int, str, str]] = []
@@ -982,7 +984,7 @@ class USBHIDFrame(wx.Frame):
 
             self.cmd_combo.SetSelection(0)
             self.log(
-                f"[命令載入] 完成解析「{Path(file_path).name}」：合法命令 {valid_count} 筆，錯誤行數 {len(error_entries)} 行。"
+                f"[命令載入] 完成解析「{cmd_filename}」：合法命令 {valid_count} 筆，錯誤行數 {len(error_entries)} 行。"
             )
 
             for line_no, reason, raw_preview in error_entries:
