@@ -28,6 +28,12 @@ def get_resource_path(relative_path):
     return base_path / relative_path
 
 
+def extract_version_from_appid(appid: str) -> str:
+    """從 AppUserModelID 字串尾端擷取版號"""
+    match = re.search(r"(\d+(?:\.\d+)+)$", appid.strip())
+    return match.group(1) if match else ""
+
+
 # ---------------------------------------------------------------------------
 # Windows API 定義：讀取 HID Caps 取得 Input / Output / Feature 長度
 # ---------------------------------------------------------------------------
@@ -316,14 +322,16 @@ class USBGlobalMonitorThread(threading.Thread):
 # GUI 主視窗
 # ---------------------------------------------------------------------------
 class USBHIDFrame(wx.Frame):
-    def __init__(self):
-        super().__init__(None, title="USB HID Tool", size=wx.Size(840, 680))
+    def __init__(self, app_version: str = ""):
+        base_title = "USB HID Tool"
+        window_title = f"{base_title} {app_version}".strip() if app_version else base_title
+        super().__init__(None, title=window_title, size=wx.Size(840, 680))
 
-        self.dev = None
+        self.dev: hid.device | None = None
         self.connected_path = None
-        self.monitor_thread = None
-        self.device_info_list = []
-        self.cmd_list = []  # [(cmd_name, hex_str), ...]
+        self.monitor_thread: USBGlobalMonitorThread | None = None
+        self.device_info_list: list[dict] = []
+        self.cmd_list: list[tuple[str, str]] = []  # [(cmd_name, hex_str), ...]
         self.stop_requested = False  # 控制 Run All 中止標記
 
         # 動態 Report 長度紀錄 (由 HIDP_CAPS 決定)
@@ -495,14 +503,14 @@ class USBHIDFrame(wx.Frame):
         # 第一排：三個 CheckBox 開關
         r1_sizer = wx.BoxSizer(wx.HORIZONTAL)
 
-        self.chk_enable_highlight = wx.CheckBox(parent, label="啟用封包資料高亮設定")
+        self.chk_enable_highlight = wx.CheckBox(parent, label="啟用封包高亮設定")
         self.chk_enable_highlight.SetValue(True)  # 預設開啟
         self.chk_enable_highlight.Bind(wx.EVT_CHECKBOX, self.on_highlight_toggled)
 
-        self.chk_big_endian = wx.CheckBox(parent, label="長度欄位數值為 Big-Endian 排列")
+        self.chk_big_endian = wx.CheckBox(parent, label="長度欄位大小數值為 Big-Endian 排列")
         self.chk_big_endian.SetValue(False)  # 預設 Little-Endian
 
-        self.chk_decode_ascii = wx.CheckBox(parent, label="轉換資料欄位數值為文字(非 ASCII 可列印字元以中點 · 替代)")
+        self.chk_decode_ascii = wx.CheckBox(parent, label="轉換資料欄位數值為文字(非 ASCII 可列印字元則以中點 · 替代)")
         self.chk_decode_ascii.SetValue(False)  # 預設關閉
 
         r1_sizer.Add(self.chk_enable_highlight, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 5)
@@ -534,12 +542,24 @@ class USBHIDFrame(wx.Frame):
         r2_sizer.Add(lbl_payload_offset, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 5)
         r2_sizer.Add(self.txt_payload_offset, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 5)
 
-        # 第三排：Log 標題與 Clear / Save 按鈕
+        # 第三排：Airoha 封包偏移與長度快速套用按鈕
         r3_sizer = wx.BoxSizer(wx.HORIZONTAL)
 
+        self.apply_airoha_usb_btn = wx.Button(parent, label="快速套用 Airoha USB 封包格式")
+        self.apply_airoha_usb_btn.Bind(wx.EVT_BUTTON, self.on_btn_apply_airoha_usb)
+
+        self.apply_airoha_race_btn = wx.Button(parent, label="快速套用 Airoha RACE 封包格式")
+        self.apply_airoha_race_btn.Bind(wx.EVT_BUTTON, self.on_btn_apply_airoha_race)
+
+        r3_sizer.Add(self.apply_airoha_usb_btn, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 5)
+        r3_sizer.Add(self.apply_airoha_race_btn, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 5)
+
+        # 第四排：Log 標題與 Clear / Save 按鈕
+        r4_sizer = wx.BoxSizer(wx.HORIZONTAL)
+
         lbl_log = wx.StaticText(parent, label="輸出日誌:")
-        r3_sizer.Add(lbl_log, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 5)
-        r3_sizer.AddStretchSpacer(1)
+        r4_sizer.Add(lbl_log, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 5)
+        r4_sizer.AddStretchSpacer(1)
 
         self.clear_log_btn = wx.Button(parent, label="Clear Log")
         self.clear_log_btn.Bind(wx.EVT_BUTTON, self.on_btn_clear_log)
@@ -547,13 +567,14 @@ class USBHIDFrame(wx.Frame):
         self.save_log_btn = wx.Button(parent, label="Save Log")
         self.save_log_btn.Bind(wx.EVT_BUTTON, self.on_btn_save_log)
 
-        r3_sizer.Add(self.clear_log_btn, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 5)
-        r3_sizer.Add(self.save_log_btn, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 5)
+        r4_sizer.Add(self.clear_log_btn, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 5)
+        r4_sizer.Add(self.save_log_btn, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 5)
 
         # 組裝主 Sizer
         sizer.Add(r1_sizer, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.TOP, 2)
-        sizer.Add(r2_sizer, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 2)
-        sizer.Add(r3_sizer, 0, wx.EXPAND | wx.ALL, 2)
+        sizer.Add(r2_sizer, 0, wx.EXPAND | wx.LEFT | wx.RIGHT, 2)
+        sizer.Add(r3_sizer, 0, wx.EXPAND | wx.LEFT | wx.RIGHT, 2)
+        sizer.Add(r4_sizer, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 2)
 
         # Log 文字顯示區域 (RichTextCtrl)
         self.log_text = rt.RichTextCtrl(parent, style=wx.TE_MULTILINE | wx.TE_READONLY | wx.HSCROLL)
@@ -600,6 +621,16 @@ class USBHIDFrame(wx.Frame):
 
     def on_btn_get_report(self, event):
         self.get_report(clear_airoha=False)
+
+    def on_btn_apply_airoha_usb(self, event):
+        self.txt_len_offset.SetValue("1")
+        self.txt_len_length.SetValue("1")
+        self.txt_payload_offset.SetValue("3")
+
+    def on_btn_apply_airoha_race(self, event):
+        self.txt_len_offset.SetValue("5")
+        self.txt_len_length.SetValue("2")
+        self.txt_payload_offset.SetValue("7")
 
     def on_btn_clear_log(self, event):
         self.clear_log()
@@ -1588,14 +1619,16 @@ class USBHIDFrame(wx.Frame):
 # 主程式進入點
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
+    myappid = "neilxia.usbhidtool.wx.1.2.4"
+    app_version = extract_version_from_appid(myappid)
+
     try:
-        myappid = "neilxia.usbhidtool.wx.1.2.3"
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)
     except Exception:
         pass
 
     app = wx.App(False)
-    frame = USBHIDFrame()
+    frame = USBHIDFrame(app_version=app_version)
 
     icon_path = get_resource_path("usb_hid_tool.ico")
     if icon_path.exists():
