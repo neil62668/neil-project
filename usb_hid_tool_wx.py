@@ -319,17 +319,55 @@ class USBGlobalMonitorThread(threading.Thread):
 
 
 # ---------------------------------------------------------------------------
+# 背景中斷傳輸 (Interrupt IN) 監聽 Thread：持續抓取裝置回傳資料並回報主執行緒
+# ---------------------------------------------------------------------------
+class USBInterruptReadThread(threading.Thread):
+    def __init__(self, dev: hid.device, read_len: int, on_data_received_cb, on_read_error_cb):
+        super().__init__()
+        self.daemon = True
+        self._stop_event = threading.Event()
+        self.dev = dev
+        self.read_len = max(read_len, 64)
+        self.on_data_received_cb = on_data_received_cb
+        self.on_read_error_cb = on_read_error_cb
+
+    def stop(self):
+        self._stop_event.set()
+
+    def is_stopped(self) -> bool:
+        return self._stop_event.is_set()
+
+    def run(self):
+        while not self._stop_event.is_set():
+            try:
+                data = self.dev.read(self.read_len, timeout_ms=50)
+                if self._stop_event.is_set():
+                    break
+                if data:
+                    recv_bytes = bytes(data)
+                    if self.on_data_received_cb:
+                        wx.CallAfter(self.on_data_received_cb, recv_bytes)  # type: ignore[reportCallIssue]
+                else:
+                    time.sleep(0.01)
+            except Exception as e:
+                if not self._stop_event.is_set() and self.on_read_error_cb:
+                    wx.CallAfter(self.on_read_error_cb, str(e))  # type: ignore[reportCallIssue]
+                break
+
+
+# ---------------------------------------------------------------------------
 # GUI 主視窗
 # ---------------------------------------------------------------------------
 class USBHIDFrame(wx.Frame):
     def __init__(self, app_version: str = ""):
         base_title = "USB HID Tool"
         window_title = f"{base_title} {app_version}".strip() if app_version else base_title
-        super().__init__(None, title=window_title, size=wx.Size(840, 680))
+        super().__init__(None, title=window_title, size=wx.Size(840, 720))
 
         self.dev: hid.device | None = None
         self.connected_path = None
         self.monitor_thread: USBGlobalMonitorThread | None = None
+        self.interrupt_thread: USBInterruptReadThread | None = None
         self.device_info_list: list[dict] = []
         self.cmd_list: list[tuple[str, str]] = []  # [(cmd_name, hex_str), ...]
         self.stop_requested = False  # 控制 Run All 中止標記
@@ -439,8 +477,22 @@ class USBHIDFrame(wx.Frame):
         r2_sizer.Add(action_delay_label, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 5)
         r2_sizer.Add(self.action_delay_input, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 5)
 
+        # 第三排：中斷傳輸提示說明與背景監聽切換按鈕
+        r3_sizer = wx.BoxSizer(wx.HORIZONTAL)
+        self.interrupt_hint = wx.StaticText(
+            parent,
+            label="提示：若USB裝置不支援控制傳輸(Control Transfer)，請改用中斷傳輸(Interrupt Transfer)來抓取資料",
+        )
+        self.interrupt_btn = wx.Button(parent, label="開始監聽 USB HID 中斷傳輸")
+        self.interrupt_btn.Bind(wx.EVT_BUTTON, self.on_btn_toggle_interrupt)
+        self.interrupt_btn.Enable(False)
+
+        r3_sizer.Add(self.interrupt_hint, 1, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 5)
+        r3_sizer.Add(self.interrupt_btn, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 5)
+
         v_sizer.Add(r1_sizer, 0, wx.EXPAND)
         v_sizer.Add(r2_sizer, 0, wx.EXPAND)
+        v_sizer.Add(r3_sizer, 0, wx.EXPAND)
         return v_sizer
 
     def _build_data_section(self, parent):
@@ -610,6 +662,12 @@ class USBHIDFrame(wx.Frame):
     def on_btn_stop_run(self, event):
         self.stop_run_all()
 
+    def on_btn_toggle_interrupt(self, event):
+        if self.interrupt_thread is not None and self.interrupt_thread.is_alive():
+            self.stop_interrupt_monitor(log_msg=True, reopen_dev=True)
+        else:
+            self.start_interrupt_monitor()
+
     def on_btn_set_feature(self, event):
         self.set_feature(clear_airoha=True)
 
@@ -648,7 +706,98 @@ class USBHIDFrame(wx.Frame):
         event.Skip()
 
     # ---------------------------------------------------------------------------
-    # 全時背景監控管理 (CallAfter 核心)
+    # 背景中斷傳輸 (Interrupt IN) 監聽控制
+    # ---------------------------------------------------------------------------
+    def _reopen_hid_device_handle(self) -> bool:
+        """關閉現有 hid.device handle 並於同一個 connected_path 重新開啟"""
+        if not self.connected_path:
+            return False
+
+        try:
+            if self.dev is not None:
+                try:
+                    self.dev.close()
+                except Exception:
+                    pass
+                self.dev = None
+
+            new_dev = hid.device()
+            new_dev.open_path(self.connected_path)
+            new_dev.set_nonblocking(True)
+            self.dev = new_dev
+
+            if self.monitor_thread:
+                self.monitor_thread.set_target_path(self.connected_path)
+            return True
+        except Exception as e:
+            self.log(f"[警告] 重新開啟 HID 裝置連線失敗: {str(e)}")
+            self.dev = None
+            return False
+
+    def start_interrupt_monitor(self):
+        if self.connected_path is None:
+            wx.MessageBox("請先連接 USB HID 裝置！", "警告", wx.OK | wx.ICON_WARNING, self)
+            return
+
+        if self.interrupt_thread is not None and self.interrupt_thread.is_alive():
+            return
+
+        # 若先前停止時已關閉 handle 或 handle 尚未建立，重新開啟乾淨的 hid.device handle
+        if self.dev is None and not self._reopen_hid_device_handle():
+            wx.MessageBox("無法重新開啟 USB HID 裝置進行中斷監聽！", "錯誤", wx.OK | wx.ICON_ERROR, self)
+            return
+
+        assert self.dev is not None
+        read_len = self.dev_caps_i_len if self.dev_caps_i_len > 0 else 64
+        self.interrupt_thread = USBInterruptReadThread(
+            dev=self.dev,
+            read_len=read_len,
+            on_data_received_cb=self._on_interrupt_data_received,
+            on_read_error_cb=self._on_interrupt_read_error,
+        )
+        self.interrupt_thread.start()
+        self.interrupt_btn.SetLabel("停止監聽 USB HID 中斷傳輸")
+        self.log(f"[Interrupt IN] 開始監聽 USB HID 中斷傳輸 (緩衝區長度: {read_len} Bytes)...")
+
+    def stop_interrupt_monitor(self, log_msg: bool = False, reopen_dev: bool = False):
+        thread = self.interrupt_thread
+        self.interrupt_thread = None
+
+        if thread is not None:
+            thread.stop()
+            if thread.is_alive() and threading.current_thread() is not thread:
+                thread.join(timeout=0.5)
+
+        # 停止背景 read 執行緒後關閉舊 handle，避免後續重啟時共用卡住/異常的 read 狀態
+        if reopen_dev and self.connected_path is not None:
+            self._reopen_hid_device_handle()
+        elif not reopen_dev and self.dev is not None:
+            try:
+                self.dev.close()
+            except Exception:
+                pass
+            self.dev = None
+
+        if hasattr(self, "interrupt_btn") and self.interrupt_btn:
+            self.interrupt_btn.SetLabel("開始監聽 USB HID 中斷傳輸")
+
+        if log_msg:
+            self.log("[Interrupt IN] 已停止監聽 USB HID 中斷傳輸。")
+
+    def _on_interrupt_data_received(self, recv_bytes: bytes):
+        if self.interrupt_thread is None or self.interrupt_thread.is_stopped():
+            return
+        title = f"[RX] Interrupt IN 接收資料 (長度: {len(recv_bytes)} Bytes):"
+        self.log_payload(title, recv_bytes, len(recv_bytes), direction="<-")
+
+    def _on_interrupt_read_error(self, err_msg: str):
+        if self.interrupt_thread is None or self.interrupt_thread.is_stopped():
+            return
+        self.stop_interrupt_monitor(log_msg=False, reopen_dev=True)
+        self.log(f"[錯誤] Interrupt IN 監聽發生例外: {err_msg}")
+
+    # ---------------------------------------------------------------------------
+    # 全時背景監測管理 (CallAfter 核心)
     # ---------------------------------------------------------------------------
     def start_global_monitor(self):
         self.monitor_thread = USBGlobalMonitorThread(
@@ -662,10 +811,12 @@ class USBHIDFrame(wx.Frame):
             self.refresh_devices()
 
     def handle_unexpected_disconnect(self):
-        if self.dev is None:
+        if self.dev is None and self.connected_path is None:
             return
 
         self.stop_requested = True  # 若正在 Run All 亦一併中斷
+        self.stop_interrupt_monitor(log_msg=False, reopen_dev=False)
+
         if self.monitor_thread:
             self.monitor_thread.clear_target_path()
 
@@ -866,8 +1017,13 @@ class USBHIDFrame(wx.Frame):
 
         self.load_cmd_btn.Enable(is_connected)
         self.action_delay_input.Enable(is_connected)
+        self.interrupt_btn.Enable(is_connected)
 
         if not is_connected:
+            if self.interrupt_thread is not None:
+                self.stop_interrupt_monitor(log_msg=False, reopen_dev=False)
+            self.interrupt_btn.SetLabel("開始監聽 USB HID 中斷傳輸")
+
             self.run_one_btn.Enable(False)
             self.run_all_btn.Enable(False)
             self.stop_run_btn.Enable(False)
@@ -1395,11 +1551,14 @@ class USBHIDFrame(wx.Frame):
                 self.dev_caps_o_len = 0
                 self.dev_caps_f_len = 0
         else:
+            self.stop_interrupt_monitor(log_msg=False, reopen_dev=False)
+
             if self.monitor_thread:
                 self.monitor_thread.clear_target_path()
 
             try:
-                self.dev.close()
+                if self.dev:
+                    self.dev.close()
             except Exception:
                 pass
             self.dev = None
@@ -1604,6 +1763,8 @@ class USBHIDFrame(wx.Frame):
                 wx.MessageBox(str(e), "長度驗證失敗", wx.OK | wx.ICON_WARNING, self)
 
     def on_close(self, event):
+        self.stop_interrupt_monitor(log_msg=False, reopen_dev=False)
+
         if self.monitor_thread:
             self.monitor_thread.stop()
 
@@ -1619,7 +1780,7 @@ class USBHIDFrame(wx.Frame):
 # 主程式進入點
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
-    myappid = "neilxia.usbhidtool.wx.1.2.4"
+    myappid = "neilxia.usbhidtool.wx.1.2.5"
     app_version = extract_version_from_appid(myappid)
 
     try:
